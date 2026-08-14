@@ -2,7 +2,7 @@
 
 DeepSeek Harness 的 **@file / @dir 提及插件**（功能对齐 Codex CLI 的 `@` 提及），以 pnpm monorepo 维护，走 npm 发布路线。
 
-输入框输入 `@文件名/目录名片段` 弹出候选列表；确认后插入 **chip 兼容的 `@扁平化路径` token**（`/`、`.` 折叠为 `-`，如 `@warning-disposal-report-index-vue`）——该形态匹配内置引用装饰扫描（输入框 lexicon 装饰 + 对话气泡形状装饰都会渲染成底色 chip）；发送后 Host 在 pre-step 边界把该 token 解析回真实路径，自动把文件内容（`<file_context>`）或目录树+小文件内容（`<dir_context>`）注入模型上下文。
+输入框输入 `@文件名/目录名片段` 弹出候选列表；确认后插入 **chip 兼容的 `@最短无歧义后缀` token**（文件 = `父目录段/名字`、目录 = `名字`；`/`、`.` 折叠为 `-`；与其他行折叠冲突时自动向上补路径段直至唯一，如 `@warning-disposal-report-index-vue` / `@warning-disposal-report`）——该形态匹配内置引用装饰扫描（输入框 lexicon 装饰 + 对话气泡形状装饰都会渲染成底色 chip）；发送后 Host 在 pre-step 边界把该 token 按“唯一后缀匹配”解析回真实路径，自动把文件内容（`<file_context>`）或目录树+小文件内容（`<dir_context>`）注入模型上下文。
 
 > 格式演进说明：handoff 原设计插入反引号包裹路径，但实测本版本内置 UI 的反引号形态**不会**渲染 chip（输入框装饰与气泡装饰都只识别 `[/@][\w-]+` 词边界 token），因此改为扁平化 `@token` 形态。手输反引号路径（`` `src/util` ``）与手输 `@真实路径`（`@src/main.ts`）的解析仍然保留。
 
@@ -57,7 +57,7 @@ deepseek-harness checkout（`D:\ProgramData\deepseek-harness`，版本 `0.1.0-rc
 ## 已知限制
 
 - 路径含空格的引用不支持（token 以空白分隔）。
-- 提及 token 为扁平化形态（`/`、`.` → `-`）；chip 文案显示该 token 本身（内置装饰的固定行为）。
+- 提及 token 为扁平化形态（`/`、`.` → `-`），取最短无歧义后缀（文件取父目录段+名字、目录取名字，冲突时向上补段）；chip 文案显示该 token 本身（内置装饰的固定行为）。
 - 两个不同路径折叠为同一 token 时（如 `a/b.md` 与 `a-b.md`）无法区分：匹配 >1 则跳过注入（防误注入）。
 - 形如 `abc-123` 的 token 按动态插件 id 规则跳过，因此折叠后恰好形如 `<3-6字母>-<数字>` 的路径无法被提及（罕见）。
 - 菜单分组标题固定显示 `file`（`slash.menu` 语言包由 ui-input-trigger 独占注册，第三方无法本地化）。

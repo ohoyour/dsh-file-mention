@@ -98,11 +98,53 @@ export function flattenPath(path: string): string {
   return path.replace(/[/.]/g, '-')
 }
 
+/** Every flattened suffix token of a path (last 1..n segments). */
+export function suffixFlattenTokens(path: string): string[] {
+  const segments = path.split('/')
+  const out: string[] = []
+  for (let k = 1; k <= segments.length; k++) {
+    out.push(flattenPath(segments.slice(-k).join('/')))
+  }
+  return out
+}
+
 /**
- * The inserted plain-text mention for one row: `@<flattened full path>` —
- * the full relative path (not the short form) so the flattened token stays
- * unambiguous across directories.
+ * Frequency table of every flattened suffix token across the settled index:
+ * the client picks each row's SHORTEST token whose frequency is 1 (see
+ * `mentionToken`), and the Host accepts a token only when exactly one row
+ * carries it as a suffix — both sides read the same table shape.
  */
-export function mentionToken(row: RankableRow): string {
+export function buildMentionCounts(rows: readonly RankableRow[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    for (const token of suffixFlattenTokens(row.path)) {
+      counts.set(token, (counts.get(token) ?? 0) + 1)
+    }
+  }
+  return counts
+}
+
+/**
+ * The inserted plain-text mention for one row: `@<minimal unique suffix>`.
+ * Base form — files: `parent-last-segment/name`, directories: `name` — is
+ * extended one path segment at a time while its flattened token collides
+ * with another row's suffix. `src/views/kabuto/statistics/warning-disposal-report/index.vue`
+ * therefore yields `@warning-disposal-report-index-vue` (unique), while two
+ * `b/x.ts` files in different parents yield `@a-b-x-ts` / `@c-b-x-ts`.
+ */
+export function mentionToken(row: RankableRow, counts: ReadonlyMap<string, number>): string {
+  const segments = row.path.split('/')
+  const baseLength = row.type === 'directory' ? 1 : Math.min(2, segments.length)
+  for (let k = baseLength; k <= segments.length; k++) {
+    const candidate = flattenPath(segments.slice(-k).join('/'))
+    if ((counts.get(candidate) ?? 0) <= 1) return `@${candidate}`
+  }
+  // Everything collides (flatten collisions at the full path): emit the full
+  // form; the Host's ambiguity rule skips it rather than injecting wrongly.
   return `@${flattenPath(row.path)}`
+}
+
+/** The mention name (token without `@`) — the lexicon roll entry per row. */
+export function mentionName(row: RankableRow, counts: ReadonlyMap<string, number>): string {
+  return mentionToken(row, counts).slice(1)
 }

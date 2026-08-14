@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { flattenPath, mentionToken, rankRows, rankScore, uniqueCandidates } from '../src/client/rank.ts'
+import {
+  buildMentionCounts, flattenPath, mentionName, mentionToken, rankRows, rankScore, uniqueCandidates,
+} from '../src/client/rank.ts'
 import type { RankableRow } from '../src/client/rank.ts'
 
 const rows: RankableRow[] = [
@@ -46,8 +48,31 @@ describe('flattenPath / mentionToken', () => {
     expect(flattenPath('docs')).toBe('docs')
   })
 
-  it('builds the @ mention token from the full relative path', () => {
-    expect(mentionToken(rows[1]!)).toBe('@warning-disposal-report-index-vue')
-    expect(mentionToken(rows[0]!)).toBe('@warning-disposal-report')
+  it('files mention parent/name, directories mention their own name', () => {
+    const counts = buildMentionCounts(rows)
+    expect(mentionToken(rows[1]!, counts)).toBe('@warning-disposal-report-index-vue')
+    expect(mentionToken(rows[0]!, counts)).toBe('@warning-disposal-report')
+    expect(mentionName(rows[0]!, counts)).toBe('warning-disposal-report')
+  })
+
+  it('extends the suffix while the flattened token collides with another row', () => {
+    const deep: RankableRow[] = [
+      { type: 'directory', path: 'src/views/kabuto/statistics/warning-disposal-report', name: 'warning-disposal-report', dir: 'src/views/kabuto/statistics' },
+      { type: 'file', path: 'src/views/kabuto/statistics/warning-disposal-report/index.vue', name: 'index.vue', dir: 'src/views/kabuto/statistics/warning-disposal-report' },
+      { type: 'file', path: 'a/b/x.ts', name: 'x.ts', dir: 'a/b' },
+      { type: 'file', path: 'c/b/x.ts', name: 'x.ts', dir: 'c/b' },
+      { type: 'directory', path: 'p/q', name: 'q', dir: 'p' },
+      { type: 'directory', path: 'r/q', name: 'q', dir: 'r' },
+    ]
+    const counts = buildMentionCounts(deep)
+    // The user's exact expectation: deep file → parent/name form.
+    expect(mentionToken(deep[1]!, counts)).toBe('@warning-disposal-report-index-vue')
+    expect(mentionToken(deep[0]!, counts)).toBe('@warning-disposal-report')
+    // `b/x.ts` collides → extend one segment up.
+    expect(mentionToken(deep[2]!, counts)).toBe('@a-b-x-ts')
+    expect(mentionToken(deep[3]!, counts)).toBe('@c-b-x-ts')
+    // Directory `q` collides → extend.
+    expect(mentionToken(deep[4]!, counts)).toBe('@p-q')
+    expect(mentionToken(deep[5]!, counts)).toBe('@r-q')
   })
 })

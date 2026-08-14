@@ -149,13 +149,27 @@ function normPath(token: string): string {
 }
 
 /**
- * Flatten a workspace-relative path into the chip-compatible mention name
- * the client inserts: `/` and `.` both become `-` (mirror of the client's
- * `flattenPath`). `@warning-disposal-report-index-vue` resolves to
- * `warning-disposal-report/index.vue`.
+ * Flatten a path token into the chip-compatible mention shape the client
+ * inserts: `/` and `.` both become `-` (mirror of the client's
+ * `flattenPath`).
  */
 function flattenPath(path: string): string {
   return path.replace(/[/.]/g, '-')
+}
+
+/**
+ * Every flattened suffix token of a workspace-relative path (last 1..n
+ * segments). The client emits `@<minimal unique suffix>` chips (files:
+ * `parent/name`, directories: `name`, extended on collisions), so a token
+ * resolves to the single row that carries it as some suffix.
+ */
+function suffixFlattenTokens(path: string): string[] {
+  const segments = path.split('/')
+  const out: string[] = []
+  for (let k = 1; k <= segments.length; k++) {
+    out.push(flattenPath(segments.slice(-k).join('/')))
+  }
+  return out
 }
 
 /** Workspace-relative display path for a directly-resolved token. */
@@ -370,14 +384,15 @@ export default class FileIndexService extends TypertRemoteService {
         ...dirRows.map(row => ({ kind: 'directory' as const, path: row.path })),
       ]
     }
-    // 3) flattened mention-token exact match: the client inserts
-    // `@<flattened path>` chip tokens (`/` and `.` both become `-`), which
-    // the built-in reference-chip scans require. One unique row → inject;
-    // collisions (two paths flattening alike) or zero matches inject nothing.
-    if (!dirIntent && norm.includes('-')) {
-      const flattened = rows.filter(row => flattenPath(row.path) === norm)
-      if (flattened.length === 1) {
-        return [{ kind: flattened[0]!.type, path: flattened[0]!.path }]
+    // 3) flattened mention-token suffix matching: the client inserts
+    // `@<minimal unique suffix>` chip tokens (`/` and `.` both become `-`),
+    // which the built-in reference-chip scans require. A token resolves when
+    // exactly one index row carries it as a flattened suffix; collisions
+    // (two rows sharing the token) or zero matches inject nothing.
+    if (!dirIntent) {
+      const matched = rows.filter(row => suffixFlattenTokens(row.path).includes(norm))
+      if (matched.length === 1) {
+        return [{ kind: matched[0]!.type, path: matched[0]!.path }]
       }
     }
     return []

@@ -4,10 +4,11 @@
  * Flicker-free candidates are the core requirement: a sessionId-level cache
  * of the full Host index (TTL 10 s, single-flight, fetched once with
  * `query: ''`) backs pure-local per-keystroke filtering with the same
- * ranking rules the Host uses. A pick inserts the plain-text short form
- * `` `parent/name` `` (directories with a trailing `/`) — the
- * plain-text-reference decision, like ui-skill / ui-subagent; the Host's
- * pre-step boundary resolves the reference against the session workspace.
+ * ranking rules the Host uses. A pick inserts the chip-compatible plain-text
+ * reference `@<minimal unique suffix>` (files: `parent/name`, directories:
+ * `name`, `/` and `.` flattened to `-`) — the composer decorates it through
+ * the lexicon and the conversation bubble decorates it by shape; the Host's
+ * pre-step boundary resolves the token back to the workspace path.
  *
  * The plugin mounts its own Typert contribution (`remote.fileIndex`) through
  * `ctx.remote.$mount` — the third-party equivalent of what
@@ -24,7 +25,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
 import type { IndexRowWire } from './remote.ts'
-import { flattenPath, mentionToken, rankRows, uniqueCandidates } from './rank.ts'
+import { buildMentionCounts, mentionName, mentionToken, rankRows, uniqueCandidates } from './rank.ts'
 
 export const name = 'file-mention'
 
@@ -52,6 +53,12 @@ interface IndexEntry {
   settledAt?: number
 }
 
+/** One session's mention roll: suffix-token frequencies + per-row names. */
+interface MentionRoll {
+  readonly counts: Map<string, number>
+  readonly names: readonly string[]
+}
+
 /**
  * Client plugin body: mount the `fileIndex` Remote namespace, then register
  * the `@` source. Async apply + returned disposer is the api-remotes pattern.
@@ -67,6 +74,8 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   // Plugin-closure state, torn down by the returned disposer.
   const entries = new Map<string, IndexEntry>()
   const picks = new Map<string, Map<string, IndexRowWire>>()
+  /** Per-session mention rolls (uniqueness table + lexicon names). */
+  const rolls = new Map<string, MentionRoll>()
   /** Per-session lexicon invalidation listeners (subscribeLexicon consumers). */
   const lexiconListeners = new Map<string, Set<() => void>>()
 
@@ -104,10 +113,12 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         throw new Error(`fileIndex.list failed: ${answered.error.code}: ${answered.error.message}`)
       }
       const rows = answered.value.files
+      const counts = buildMentionCounts(rows)
       const current = entries.get(sessionId)
       if (current === entry) {
         current.rows = rows
         current.settledAt = Date.now()
+        rolls.set(sessionId, { counts, names: rows.map(row => mentionName(row, counts)) })
       }
       notifyLexicon(sessionId)
       return rows
@@ -151,15 +162,17 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       const row = picks.get(session.sessionId)?.get(candidate.name)
       if (row === undefined) return undefined
       // Plain-text reference in the chip-compatible shape the built-in
-      // decoration scans accept: `@<flattened full path>` ([/.] → -), e.g.
-      // `@warning-disposal-report-index-vue `. The Host resolves the
-      // flattened token against the index.
-      return { text: `${mentionToken(row)} ` }
+      // decoration scans accept: `@<minimal unique suffix>` (files:
+      // parent/name, directories: name; `/` and `.` flattened to `-`), e.g.
+      // `@warning-disposal-report-index-vue `. The Host resolves the token
+      // by suffix-matching the index.
+      const counts = rolls.get(session.sessionId)?.counts ?? new Map<string, number>()
+      return { text: `${mentionToken(row, counts)} ` }
     },
     lexicon(session) {
-      // Flattened mention names of the settled cache: the composer chips
-      // `@<name>` tokens only when the name is on this roll.
-      return entries.get(session.sessionId)?.rows?.map(row => flattenPath(row.path))
+      // Mention names of the settled cache: the composer chips `@<name>`
+      // tokens only when the name is on this roll.
+      return rolls.get(session.sessionId)?.names
     },
     subscribeLexicon(session, listener) {
       const key = session.sessionId
@@ -178,6 +191,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     unregister()
     picks.clear()
     entries.clear()
+    rolls.clear()
     lexiconListeners.clear()
     await disposeRemote()
   }

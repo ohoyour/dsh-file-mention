@@ -384,6 +384,56 @@ describe('FileIndexService pre-step injection', () => {
     )
     expect(injectedTexts(decision)).toHaveLength(0)
   })
+
+  it('resolves a basename-only hand-typed chip token when unique', async () => {
+    const { service, agent } = setup()
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'open @index-vue' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 12, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    const texts = injectedTexts(decision)
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toContain('warning-disposal-report/index.vue')
+  })
+
+  it('skips a basename chip token shared by two files', async () => {
+    const { service, agent } = setup()
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'open @readme-md' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 13, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    expect(injectedTexts(decision)).toHaveLength(0)
+  })
+
+  it('resolves the parent/name chip of a deep path to the full row', async () => {
+    const root = new Context()
+    const files = {
+      '/ws/src/views/kabuto/statistics/warning-disposal-report/index.vue': '<template>deep</template>',
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.provide('fs', fakeFs(files) as any)
+    const service = new FileIndexService(root)
+    const agent = makeAgent(CWD)
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'open @warning-disposal-report-index-vue' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 14, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    const texts = injectedTexts(decision)
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toContain('src/views/kabuto/statistics/warning-disposal-report/index.vue')
+  })
 })
 
 // ── token scanning ───────────────────────────────────────────────────────────
