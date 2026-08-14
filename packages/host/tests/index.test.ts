@@ -345,6 +345,45 @@ describe('FileIndexService pre-step injection', () => {
     expect(texts).toHaveLength(1)
     expect(texts[0]).toContain('warning-disposal-report/index.vue')
   })
+
+  it('resolves flattened chip tokens to files and directories', async () => {
+    const { service, agent } = setup()
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'open @warning-disposal-report-index-vue and @src-util' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 10, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    const texts = injectedTexts(decision)
+    expect(texts).toHaveLength(2)
+    expect(texts[0]).toContain('<file_context>')
+    expect(texts[0]).toContain('warning-disposal-report/index.vue')
+    expect(texts[1]).toContain('<dir_context>')
+    expect(texts[1]).toContain('src/util/')
+  })
+
+  it('skips flattened tokens whose flattening collides', async () => {
+    const root = new Context()
+    const files = {
+      '/ws/collide/a-b.md': '# one',
+      '/ws/collide/a/b.md': '# two',
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.provide('fs', fakeFs(files) as any)
+    const service = new FileIndexService(root)
+    const agent = makeAgent(CWD)
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'open @collide-a-b-md' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 11, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    expect(injectedTexts(decision)).toHaveLength(0)
+  })
 })
 
 // ── token scanning ───────────────────────────────────────────────────────────

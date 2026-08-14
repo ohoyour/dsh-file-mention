@@ -148,6 +148,16 @@ function normPath(token: string): string {
   return token.replace(/\\/g, '/').replace(/\/+$/, '')
 }
 
+/**
+ * Flatten a workspace-relative path into the chip-compatible mention name
+ * the client inserts: `/` and `.` both become `-` (mirror of the client's
+ * `flattenPath`). `@warning-disposal-report-index-vue` resolves to
+ * `warning-disposal-report/index.vue`.
+ */
+function flattenPath(path: string): string {
+  return path.replace(/[/.]/g, '-')
+}
+
 /** Workspace-relative display path for a directly-resolved token. */
 function relFor(cwd: string, token: string): string {
   const value = isAbsolute(token) ? relativePath(cwd, token) : token
@@ -354,11 +364,23 @@ export default class FileIndexService extends TypertRemoteService {
     const fileRows = rows.filter(row => row.type === 'file'
       && (row.path === norm || row.path.endsWith(`/${norm}`)))
     const total = fileRows.length + dirRows.length
-    if (total === 0 || total > 2) return []
-    return [
-      ...fileRows.map(row => ({ kind: 'file' as const, path: row.path })),
-      ...dirRows.map(row => ({ kind: 'directory' as const, path: row.path })),
-    ]
+    if (total >= 1 && total <= 2) {
+      return [
+        ...fileRows.map(row => ({ kind: 'file' as const, path: row.path })),
+        ...dirRows.map(row => ({ kind: 'directory' as const, path: row.path })),
+      ]
+    }
+    // 3) flattened mention-token exact match: the client inserts
+    // `@<flattened path>` chip tokens (`/` and `.` both become `-`), which
+    // the built-in reference-chip scans require. One unique row → inject;
+    // collisions (two paths flattening alike) or zero matches inject nothing.
+    if (!dirIntent && norm.includes('-')) {
+      const flattened = rows.filter(row => flattenPath(row.path) === norm)
+      if (flattened.length === 1) {
+        return [{ kind: flattened[0]!.type, path: flattened[0]!.path }]
+      }
+    }
+    return []
   }
 
   /** Build the injected message for one resolved hit; undefined = contained failure. */

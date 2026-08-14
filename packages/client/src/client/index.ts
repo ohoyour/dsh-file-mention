@@ -24,7 +24,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
 import type { IndexRowWire } from './remote.ts'
-import { rankRows, shortForm, uniqueCandidates } from './rank.ts'
+import { flattenPath, mentionToken, rankRows, uniqueCandidates } from './rank.ts'
 
 export const name = 'file-mention'
 
@@ -67,10 +67,24 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   // Plugin-closure state, torn down by the returned disposer.
   const entries = new Map<string, IndexEntry>()
   const picks = new Map<string, Map<string, IndexRowWire>>()
+  /** Per-session lexicon invalidation listeners (subscribeLexicon consumers). */
+  const lexiconListeners = new Map<string, Set<() => void>>()
+
+  const notifyLexicon = (sessionId: string): void => {
+    for (const listener of [...(lexiconListeners.get(sessionId) ?? [])]) {
+      try {
+        listener()
+      } catch (error) {
+        console.error('[file-mention] lexicon listener failed:', error)
+      }
+    }
+  }
 
   /**
    * SessionId-level index cache: TTL 10 s + single-flight. A failed fetch
    * drops the key so the next keystroke retries instead of caching failure.
+   * Settling (success or failure) notifies the lexicon listeners so the
+   * composer re-scans draft decorations.
    */
   const ensureIndex = (sessionId: string): Promise<readonly IndexRowWire[]> => {
     const existing = entries.get(sessionId)
@@ -95,11 +109,13 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         current.rows = rows
         current.settledAt = Date.now()
       }
+      notifyLexicon(sessionId)
       return rows
     })()
     entries.set(sessionId, entry)
     entry.promise.catch((error: unknown) => {
       if (entries.get(sessionId) === entry) entries.delete(sessionId)
+      notifyLexicon(sessionId)
       console.error('[file-mention] index fetch failed:', error)
     })
     return entry.promise
@@ -134,8 +150,26 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     onPick({ session, candidate }) {
       const row = picks.get(session.sessionId)?.get(candidate.name)
       if (row === undefined) return undefined
-      // Plain-text reference: `` `parent/name` `` (directories keep `/`).
-      return { text: `\`${shortForm(row)}\` ` }
+      // Plain-text reference in the chip-compatible shape the built-in
+      // decoration scans accept: `@<flattened full path>` ([/.] → -), e.g.
+      // `@warning-disposal-report-index-vue `. The Host resolves the
+      // flattened token against the index.
+      return { text: `${mentionToken(row)} ` }
+    },
+    lexicon(session) {
+      // Flattened mention names of the settled cache: the composer chips
+      // `@<name>` tokens only when the name is on this roll.
+      return entries.get(session.sessionId)?.rows?.map(row => flattenPath(row.path))
+    },
+    subscribeLexicon(session, listener) {
+      const key = session.sessionId
+      const listeners = lexiconListeners.get(key) ?? new Set<() => void>()
+      listeners.add(listener)
+      lexiconListeners.set(key, listeners)
+      return () => {
+        listeners.delete(listener)
+        if (listeners.size === 0) lexiconListeners.delete(key)
+      }
     },
   }
 
@@ -144,6 +178,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     unregister()
     picks.clear()
     entries.clear()
+    lexiconListeners.clear()
     await disposeRemote()
   }
 }

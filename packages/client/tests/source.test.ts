@@ -100,14 +100,36 @@ describe('file-mention client source', () => {
     ])
   })
 
-  it('picks insert the backtick short form, directories with a trailing slash', async () => {
+  it('picks insert the chip-compatible flattened @ token', async () => {
     const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
     const { source } = await setup(list)
     await source.candidates(SESSION, REQ('index'))
-    expect(source.onPick(PICK('index.vue'))).toEqual({ text: '`warning-disposal-report/index.vue` ' })
+    expect(source.onPick(PICK('index.vue'))).toEqual({ text: '@warning-disposal-report-index-vue ' })
 
     await source.candidates(SESSION, REQ('warning'))
-    expect(source.onPick(PICK('warning-disposal-report/'))).toEqual({ text: '`warning-disposal-report/` ' })
+    expect(source.onPick(PICK('warning-disposal-report/'))).toEqual({ text: '@warning-disposal-report ' })
+  })
+
+  it('exposes the flattened mention lexicon and notifies subscribers on settle', async () => {
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
+    const { source } = await setup(list)
+    // Cold: no settled cache yet → no roll.
+    expect(source.lexicon?.(SESSION)).toBeUndefined()
+    const notified = vi.fn()
+    const off = source.subscribeLexicon?.(SESSION, notified) ?? (() => {})
+    await source.candidates(SESSION, REQ('x'))
+    // Warm: the roll carries every flattened path (input chips need membership).
+    expect(source.lexicon?.(SESSION)).toEqual([
+      'warning-disposal-report',
+      'warning-disposal-report-index-vue',
+      'src-main-ts',
+      'docs-readme-md',
+      'other-readme-md',
+    ])
+    expect(notified).toHaveBeenCalled()
+    off()
+    await source.candidates(SESSION, REQ('y'))
+    expect(notified).toHaveBeenCalledTimes(1)
   })
 
   it('returns undefined for a pick with no backing row', async () => {

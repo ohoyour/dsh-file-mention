@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { rankRows, rankScore, shortForm, uniqueCandidates } from '../src/client/rank.ts'
+import { flattenPath, mentionToken, rankRows, rankScore, uniqueCandidates } from '../src/client/rank.ts'
 import type { RankableRow } from '../src/client/rank.ts'
 
 const rows: RankableRow[] = [
@@ -39,13 +39,15 @@ describe('uniqueCandidates', () => {
   })
 })
 
-describe('shortForm', () => {
-  it('builds `parent/name` for files and `parent/name/` for directories', () => {
-    expect(shortForm(rows[1]!)).toBe('warning-disposal-report/index.vue')
-    expect(shortForm(rows[0]!)).toBe('warning-disposal-report/')
+describe('flattenPath / mentionToken', () => {
+  it('flattens separators into the chip-compatible [\\w-]+ shape', () => {
+    expect(flattenPath('warning-disposal-report/index.vue')).toBe('warning-disposal-report-index-vue')
+    expect(flattenPath('src/util')).toBe('src-util')
+    expect(flattenPath('docs')).toBe('docs')
   })
 
-  it('keeps workspace-root entries bare', () => {
-    expect(shortForm({ type: 'file', path: 'main.ts', name: 'main.ts', dir: '' })).toBe('main.ts')
+  it('builds the @ mention token from the full relative path', () => {
+    expect(mentionToken(rows[1]!)).toBe('@warning-disposal-report-index-vue')
+    expect(mentionToken(rows[0]!)).toBe('@warning-disposal-report')
   })
 })

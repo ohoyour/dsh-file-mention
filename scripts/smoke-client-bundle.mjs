@@ -76,5 +76,10 @@ const picked = source.onPick({
   span: { start: 0, end: 1, draftRev: 1 },
 })
 console.log('dir pick:', JSON.stringify(picked))
-if (picked.text !== '`warning-disposal-report/` ') throw new Error('unexpected pick text')
+if (picked.text !== '@warning-disposal-report ') throw new Error('unexpected pick text')
+const roll = source.lexicon?.({ sessionId: 's1' })
+console.log('lexicon roll:', JSON.stringify(roll))
+if (roll === undefined || !roll.includes('warning-disposal-report-index-vue')) {
+  throw new Error('lexicon roll missing flattened mention names')
+}
 console.log('SMOKE OK')

@@ -87,12 +87,22 @@ export function uniqueCandidates<T extends RankableRow>(rows: readonly T[]): Arr
 }
 
 /**
- * The inserted short form: `` `parent-last-segment/name` `` (`` `name` `` at
- * the workspace root); directories keep a trailing `/`.
+ * Flatten a workspace-relative path into a chip-compatible mention name:
+ * both `/` and `.` become `-`, so the result matches the `[\w-]+` shape the
+ * built-in reference-chip scans accept (the composer decoration scan and the
+ * conversation bubble scan both reject `/` and `.`; backtick-wrapped paths
+ * therefore never chip). The Host resolves the flattened token by applying
+ * the same rule to every index row.
  */
-export function shortForm(row: RankableRow): string {
-  const segments = row.dir.split('/').filter(Boolean)
-  const parent = segments[segments.length - 1] ?? ''
-  const base = parent === '' ? row.name : `${parent}/${row.name}`
-  return row.type === 'directory' ? `${base}/` : base
+export function flattenPath(path: string): string {
+  return path.replace(/[/.]/g, '-')
+}
+
+/**
+ * The inserted plain-text mention for one row: `@<flattened full path>` —
+ * the full relative path (not the short form) so the flattened token stays
+ * unambiguous across directories.
+ */
+export function mentionToken(row: RankableRow): string {
+  return `@${flattenPath(row.path)}`
 }
