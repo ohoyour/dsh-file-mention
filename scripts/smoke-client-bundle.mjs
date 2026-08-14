@@ -76,11 +76,8 @@ const picked = source.onPick({
   span: { start: 0, end: 1, draftRev: 1 },
 })
 console.log('dir pick:', JSON.stringify(picked))
-if (picked.insert?.source !== 'file-mention'
-  || picked.insert.ref !== 'warning-disposal-report'
-  || picked.insert.label !== 'warning-disposal-report/'
-  || picked.insert.clipboardText !== '@{warning-disposal-report}') {
-  throw new Error('unexpected structured pick')
+if (picked.text !== '@warning-disposal-report') {
+  throw new Error('unexpected highlighted plain-text pick')
 }
 if (source.codec?.clipboardText('warning-disposal-report') !== '@{warning-disposal-report}') {
   throw new Error('unexpected clipboard serialization')
