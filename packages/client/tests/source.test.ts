@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { apply, inject, name } from '../src/client/index.ts'
+import { MENU_ALIGN_CSS } from '../src/client/menu-styles.ts'
 
 const FIXTURE = [
   { type: 'directory', path: 'warning-disposal-report', name: 'warning-disposal-report', dir: '' },
@@ -24,6 +25,16 @@ const PICK = (candidateName: string) => ({
   position: 'leading' as const,
   via: 'menu' as const,
   span: { start: 0, end: 1, draftRev: 1 },
+})
+
+describe('menu alignment stylesheet', () => {
+  it('forces the candidate menu to the composer card width', () => {
+    expect(MENU_ALIGN_CSS).toContain('[data-composer-card] [role="listbox"]')
+    expect(MENU_ALIGN_CSS).toContain('width: 100% !important')
+    expect(MENU_ALIGN_CSS).toContain('min-width: 100% !important')
+    expect(MENU_ALIGN_CSS).toContain('max-width: 100% !important')
+    expect(MENU_ALIGN_CSS).toContain('box-sizing: border-box')
+  })
 })
 
 async function setup(list: unknown) {

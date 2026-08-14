@@ -111,6 +111,7 @@ pnpm add @ohoyo/dsh-file-mention
 - 索引跳过 `node_modules`/`.git`/`dist` 等目录；上限 5000 条（文件+目录）。
 - @dir 快照有预算：树深 3 / 200 行；仅 ≤32KB 的文本文件附内容（前 24,000 字符，最多 8 个）；二进制文件跳过。
 - 每回合最多注入 5 个引用，同回合按路径去重。
+- 候选菜单默认钳制在 `min(260px,100%)` / `max(537px,100%)`（内置 MenuView 设计）；本插件注入 CSS 将菜单宽度强制为输入卡片宽度（`[data-composer-card] [role="listbox"] { width:100% }`，随插件卸载自动移除）。
 
 ## License
 

@@ -25,6 +25,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
 import type { IndexRowWire } from './remote.ts'
+import './menu-styles.ts'
 import {
   buildMentionCounts, mentionName, mentionToken, rankRows, uniqueCandidates,
 } from './rank.ts'
