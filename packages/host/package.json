@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "DeepSeek Harness host plugin for @file and @directory mentions: workspace file index Remote service and pre-step reference injection.",
   "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "license": "MIT",
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",

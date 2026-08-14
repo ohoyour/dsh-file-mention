@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "DeepSeek Harness web client plugin: the '@' input-trigger source for @file/@directory mentions.",
   "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "license": "MIT",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

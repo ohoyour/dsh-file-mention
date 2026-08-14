@@ -3,12 +3,10 @@
  *
  * Flicker-free candidates are the core requirement: a sessionId-level cache
  * of the full Host index (Host-configured TTL, single-flight, fetched once with
- * `query: ''`) backs pure-local per-keystroke filtering with the same
- * ranking rules the Host uses. A pick inserts the chip-compatible plain-text
- * reference `@<minimal unique suffix>` (files: `parent/name`, directories:
- * `name`, `/` and `.` flattened to `-`) — the composer decorates it through
- * the lexicon and the conversation bubble decorates it by shape; the Host's
- * pre-step boundary resolves the token back to the workspace path.
+ * `query: ''`) backs pure-local per-keystroke filtering with the same ranking
+ * rules the Host uses. A pick inserts a structured `ReferenceInsert` carrying
+ * the exact workspace-relative path; the source codec serializes it only when
+ * the message is sent, so labels are independent from path syntax.
  *
  * The plugin mounts its own Typert contribution (`remote.fileIndex`) through
  * `ctx.remote.$mount` — the third-party equivalent of what
@@ -26,8 +24,9 @@ import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
 import type { IndexResultWire, IndexRowWire } from './remote.ts'
 import { installMenuStyles } from './menu-styles.ts'
+import { serializeFileReference } from './reference.ts'
 import {
-  buildMentionCounts, isMentionName, mentionName, mentionToken, rankRows, uniqueCandidates,
+  buildMentionCounts, isMentionName, mentionName, rankRows, uniqueCandidates,
 } from './rank.ts'
 
 export const name = 'file-mention'
@@ -187,11 +186,9 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         const rows = await ensureIndex(session.sessionId)
         // Superseded keystroke: the shared fetch stays warm, this caller yields.
         if (signal.aborted) return []
-        const roll = rolls.get(session.sessionId)
-        const mentionableRows = roll === undefined
-          ? []
-          : rows.filter(row => isMentionName(mentionName(row, roll.counts)))
-        const ranked = rankRows(mentionableRows, query, 20)
+        // Structured picks do not need to satisfy the legacy plain-text chip
+        // lexicon, so paths with spaces and other punctuation remain visible.
+        const ranked = rankRows(rows, query, 20)
         const unique = uniqueCandidates(ranked)
         picks.set(session.sessionId, new Map(unique.map(item => [item.name, item.row])))
         return unique.map(({ name: itemName, description, icon }) => ({
@@ -207,17 +204,14 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     onPick({ session, candidate }) {
       const row = picks.get(session.sessionId)?.get(candidate.name)
       if (row === undefined) return undefined
-      // Plain-text reference (the same decision as ui-skill / ui-subagent):
-      // the draft gains the literal `@<minimal unique suffix>` token and the
-      // composer decorates it as a chip by scanning against our lexicon.
-      // This path is deliberate: the occurrence-chip alternative renders in a
-      // fixed ~4em cell whose label is clipped with an ellipsis (built-in
-      // InputBar CSS) — long paths get cut off — while the plain-text
-      // decoration paints the chip look over the draft's own glyphs, so the
-      // whole token stays visible. The Host resolves the token by
-      // suffix-matching the index.
-      const counts = rolls.get(session.sessionId)?.counts ?? new Map<string, number>()
-      return { text: `${mentionToken(row, counts)} ` }
+      return {
+        insert: {
+          source: name,
+          ref: row.path,
+          label: candidate.name,
+          clipboardText: serializeFileReference(row.path),
+        },
+      }
     },
     lexicon(session) {
       // Mention names of the settled cache: the composer chips hand-typed
@@ -233,6 +227,13 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         listeners.delete(listener)
         if (listeners.size === 0) lexiconListeners.delete(key)
       }
+    },
+    codec: {
+      clipboardText: serializeFileReference,
+      serialize: async (ref, signal) => {
+        if (signal.aborted) throw new Error('file-mention: reference serialization aborted')
+        return serializeFileReference(ref)
+      },
     },
   }
 

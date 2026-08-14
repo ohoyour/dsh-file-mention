@@ -2,16 +2,16 @@
 
 DeepSeek Harness 的 **@file / @dir 提及插件**（功能对齐 Codex CLI 的 `@` 提及），以 pnpm monorepo 维护，走 npm 发布路线。
 
-输入框输入 `@文件名/目录名片段` 弹出候选列表；确认后插入 **chip 兼容的 `@最短无歧义后缀` token**（文件 = `父目录段/名字`、目录 = `名字`；`/`、`.` 折叠为 `-`；与其他行折叠冲突时自动向上补路径段直至唯一，如 `@warning-disposal-report-index-vue` / `@warning-disposal-report`）——该形态匹配内置引用装饰扫描（输入框 lexicon 装饰 + 对话气泡形状装饰都会渲染成底色 chip，且**完整可见、不被截断**）；发送后 Host 在 pre-step 边界把该 token 按“唯一后缀匹配”解析回真实路径，自动把文件内容（`<file_context>`）或目录树+小文件内容（`<dir_context>`）注入模型上下文。
+输入框输入 `@文件名/目录名片段` 弹出候选列表；确认后插入 Harness 原生的结构化引用 chip，内部保存准确的工作区相对路径，发送时由 codec 序列化为可读的 `@{精确路径}`。因此路径含空格、标点、同名文件和目录折叠冲突都能保持准确引用；Host 在 pre-step 边界解析结构化路径，并注入文件内容（`<file_context>`）或目录树+小文件内容（`<dir_context>`）到模型上下文。手输的旧式 `@路径` 和反引号路径仍保留兼容解析。
 
-> **为什么不用带 `/` 的真实路径？** 两处内置装饰（气泡的 `projectUserText` 与输入框的 lexicon 扫描）都只接受 `[/@][\w-]+` 字符集，含 `/`、`.` 的文本不会被渲染成 chip；而输入框的 occurrence chip 虽支持任意文案，其显示单元却是固定 ~4em 的占位符单元格、长文案会被居中裁切加省略号（内置 `InputBar.module.css` 的 `.chipLabel` 固定设计，短名字如 skill/subagent 才适用），长路径同样显示不全。因此采用 text 路径：chip 画在真实文字上、宽度随文本、永不截断，代价是分隔符折叠为 `-`。手输反引号路径（`` `src/util` ``）与手输 `@真实路径`（`@src/main.ts`）的解析仍然保留。
+> 结构化引用依赖 Harness 当前的 `ReferenceInsert` / `ReferenceCodec` 接口。`@{...}` 是发送给 Host 的协议文本，不是用户必须手写的语法；复制或粘贴引用时也使用同一格式。旧式纯文本 token 仅作为兼容入口保留。
 
 ## 包结构
 
 | 包 | 说明 |
 | --- | --- |
 | `packages/host` (`@ohoyo/dsh-file-mention-host`) | Host 插件：`fileIndex` Typert Remote 服务（工作区文件+目录索引，cwd 默认缓存 15s、单飞、上限 5000 条/深度 14）+ `agent/pre-step` 引用注入 |
-| `packages/client` (`@ohoyo/dsh-client-ui-file-mention`) | Web 客户端插件：`@` 触发源（`name: 'file'`、`order: -1`），按 Host 配置 TTL 的本地索引缓存 + 单飞逐键本地过滤，候选无闪烁；occurrence chip 插入 + lexicon 装饰 |
+| `packages/client` (`@ohoyo/dsh-client-ui-file-mention`) | Web 客户端插件：`@` 触发源（`name: 'file'`、`order: -1`），按 Host 配置 TTL 的本地索引缓存 + 单飞逐键本地过滤，候选无闪烁；结构化 occurrence chip + 旧式 lexicon 兼容 |
 | `packages/bundle` (`@ohoyo/dsh-file-mention`) | 发布面 bundle：`dsh.bundle.patch` 指向 `cordis.patch.yml`，同时插入 host 行与 client 行 |
 
 ## 开发
@@ -20,7 +20,7 @@ DeepSeek Harness 的 **@file / @dir 提及插件**（功能对齐 Codex CLI 的 
 pnpm install --frozen-lockfile  # 从 lockfile 安装 registry 依赖
 pnpm build          # tsdown 构建 lib/（host/client 含类型声明；client.js 为浏览器 factory bundle）
 pnpm typecheck      # tsc --noEmit
-pnpm test           # vitest / node:test（host 34 用例、client 21 用例、bundle 2 用例）
+pnpm test           # vitest / node:test（Host + Client 60 用例、bundle 2 用例）
 pnpm smoke          # 构建产物冒烟（built client.js + cordis Context 驱动）
 pnpm pack:local     # 生成可在仓库外 profile 安装的三个 tarball
 ```
@@ -92,8 +92,7 @@ pnpm pack:local
 
 1. 重启 DSH 进程后插件仍在（组合行存在、无 loading 错误）。
 2. 输入 `@warning` → 候选平滑出现（文件 `📄` + 目录 `📁/`），逐键输入无闪烁。
-3. Enter 选文件 → 输入框出现完整可见的 chip `@warning-disposal-report-index-vue`；
-   选目录 → `@warning-disposal-report`；发送后对话气泡显示同一 token chip。
+3. Enter 选文件或目录 → 输入框出现带准确路径身份的 chip；发送后对话气泡显示对应引用。
 4. 发送文件引用 → 模型上下文出现 `<file_context>`。
 5. 发送目录引用 → 上下文出现 `<dir_context>`，二进制/超大文件被跳过并在统计中体现。
 6. `@不存在的路径`、普通反引号文本（如 `` `false` ``）不注入、不报错。
@@ -102,15 +101,12 @@ pnpm pack:local
 
 ## 已知限制
 
-- 路径含空格的引用不支持（token 以空白分隔）；这类路径也不会出现在候选菜单或 lexicon 中。
-- 提及 token 为折叠形态（`/`、`.` → `-`），取最短无歧义后缀（文件取父目录段+名字、目录取名字，冲突时向上补段）；完整可见、不被截断（见开头说明）。
-- 两个不同路径折叠为同一 token 时（如 `a/b.md` 与 `a-b.md`）无法区分：匹配 >1 则跳过注入（防误注入）。
-- 形如 `abc-123` 的 token 按动态插件 id 规则跳过，因此折叠后恰好形如 `<3-6字母>-<数字>` 的路径无法被提及（罕见）。
+- 手输旧式 `@路径` 仍受空白分隔、扁平化碰撞和动态插件 ID 兼容规则影响；菜单选择的结构化引用不受这些限制。
 - 菜单分组标题固定显示 `file`（`slash.menu` 语言包由 ui-input-trigger 独占注册，第三方无法本地化）。
 - 同短名后缀匹配上限 2 条，超过则跳过注入（防误注入）。
 - 索引跳过 `node_modules`/`.git`/`dist` 等目录；上限 5000 条（文件+目录）。
 - @dir 快照有预算：树深 3 / 200 行；仅 ≤32KB 的文本文件附内容（前 24,000 字符，最多 8 个）；二进制文件跳过。
-- 每回合最多注入 5 个引用，同回合按路径去重。
+- 每回合最多注入 5 个引用，同回合按路径去重；默认总上下文预算为 12,000 个估算 token，可通过 `maxContextTokens` 调整。
 - 候选菜单默认钳制在 `min(260px,100%)` / `max(537px,100%)`（内置 MenuView 设计）；本插件仅对包含 `file` 分组的菜单注入 CSS，将宽度强制为输入卡片宽度（随插件卸载自动移除）。
 
 ## License

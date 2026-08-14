@@ -16,9 +16,9 @@ input-trigger source** (`trigger: '@'`, `name: 'file'`, `order: -1`).
 - Candidates: files `📄` `name` + parent-dir description; directories `📁`
   `name/`; clashing basenames become `dir/名字` (directories keep `/`) so menu
   React keys stay unique.
-- `onPick` returns the plain-text reference (the same decision as
-  ui-skill / ui-subagent): `` `parent-last-segment/name` `` (directories with a
-  trailing `/`); the Host pre-step boundary resolves it against the workspace.
+- `onPick` returns a structured `ReferenceInsert` with the exact workspace path
+  and a short display label. The source codec serializes it at submit time as
+  `@{path}`, preserving spaces, punctuation, and duplicate basenames.
 - `warm()` prewarms the session cache; every remote failure returns `[]` and logs.
 
 ## Build artifacts
@@ -39,9 +39,9 @@ modules node half scans into `window.__DSH_BOOT__` and serves as
 pnpm build && pnpm test
 ```
 
-Tests (vitest, 21 cases) cover contribution mounting, single-flight caching,
-local filtering, basename disambiguation, short-form picks (file/directory),
-failure containment, aborted keystrokes, TTL expiry, unsupported path names,
+Tests (vitest) cover contribution mounting, single-flight caching, local
+filtering, basename disambiguation, structured picks (including spaces),
+codec serialization, failure containment, aborted keystrokes, TTL expiry,
 style cleanup, and the warm hook.
 
 ## License

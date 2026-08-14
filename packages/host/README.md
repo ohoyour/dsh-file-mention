@@ -24,8 +24,14 @@ marker, and the literal parameter names (`agent`, `request`) — the built
 
 ## B. `agent/pre-step` reference injection
 
-A prepended listener scans user-message text for `@token` and `` `short/path` ``
-references (dynamic plugin ids `abc-123` are never hijacked) and resolves them:
+A prepended listener scans user-message text for structured `@{exact/path}`,
+legacy `@token`, and `` `short/path` `` references (dynamic plugin ids
+`abc-123` are never hijacked) and resolves them:
+
+- Structured `@{exact/path}` references are decoded and resolved only as the
+  exact workspace-relative path. Paths containing spaces and delimiter
+  characters round-trip through the Client codec.
+- Legacy references retain the compatibility behavior below:
 
 1. token with trailing `/` = directory intent → direct resolve+stat, else index
    suffix match among directories;
@@ -38,7 +44,9 @@ references (dynamic plugin ids `abc-123` are never hijacked) and resolves them:
   lines) plus up to 8 text files (≤32 KB, binary-sniffed, 24 000 chars each) under
   a 60 000-char total budget.
 - At most 5 references per turn, deduped by path; every I/O failure is logged and
-  skipped — injection never blocks a turn.
+  skipped — injection never blocks a turn. The default aggregate context budget
+  is 12,000 estimated tokens (`maxContextTokens`); Harness `tokenMeter` is used
+  when available, otherwise a conservative character estimate is used.
 
 ## Configuration
 
@@ -54,7 +62,7 @@ caches use one policy.
 pnpm build && pnpm test
 ```
 
-Tests (vitest, 34 cases) cover the index (files + dirs, noise skipping, ranking),
+Tests (vitest) cover the index (files + dirs, noise skipping, ranking),
 the injection paths (`` `short/` ``, `` `short` ``, `@path`, suffix matching, dedupe,
 5-ref cap, dynamic-id skip, reject/abort passthrough), and a real event-bus
 integration that mounts the plugin as a class plugin and drives the scoped

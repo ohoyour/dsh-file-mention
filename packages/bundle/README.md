@@ -30,6 +30,7 @@ profile's `cordis.patch.yml` and keep the package name on the row:
   name: '@ohoyo/dsh-file-mention-host'
   config:
     indexTtlMs: 30000
+    maxContextTokens: 12000
     maxRefsPerTurn: 3
 ```
 

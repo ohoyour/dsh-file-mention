@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "description": "Monorepo for the @file/@directory mention plugin (host + web client + bundle) for DeepSeek Harness.",
   "scripts": {
     "build": "pnpm -r build",

@@ -4,7 +4,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import AgentRegistry, { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import FileIndexService, { Config, name, scanTokens } from '../src/index.ts'
+import FileIndexService, { Config, name, scanReferences, scanTokens } from '../src/index.ts'
 
 // ── fake fs backend ──────────────────────────────────────────────────────────
 //
@@ -28,6 +28,7 @@ const TREE: Record<string, string> = {
   '/ws/docs/d.md': '# d',
   '/ws/docs/e.md': '# e',
   '/ws/docs/f.md': '# f',
+  '/ws/docs/space name.md': '# spaced',
   '/ws/many/f01.txt': '1',
   '/ws/many/f02.txt': '2',
   '/ws/many/f03.txt': '3',
@@ -206,6 +207,49 @@ describe('FileIndexService.list', () => {
 // ── pre-step injection tests ─────────────────────────────────────────────────
 
 describe('FileIndexService pre-step injection', () => {
+  it('enforces the per-turn context token budget', async () => {
+    const defaults = Config()
+    const { service, agent } = setup({ ...defaults, maxContextTokens: 1 })
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'inspect `docs/a.md`' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 18, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    expect(injectedTexts(decision)).toHaveLength(0)
+  })
+
+  it('injects an exact structured reference, including paths with spaces', async () => {
+    const { service, agent } = setup()
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'inspect @{docs/space name.md}' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 16, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    const texts = injectedTexts(decision)
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toContain('docs/space name.md')
+    expect(texts[0]).toContain('# spaced')
+  })
+
+  it('does not suffix-match a missing structured path', async () => {
+    const { service, agent } = setup()
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'inspect @{missing/index.vue}' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 17, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    expect(injectedTexts(decision)).toHaveLength(0)
+  })
+
   it('injects <dir_context> for `short/` and <file_context> for files', async () => {
     const { service, agent } = setup()
     const user = createUserMessage({
@@ -494,6 +538,15 @@ describe('FileIndexService pre-step injection', () => {
 // ── token scanning ───────────────────────────────────────────────────────────
 
 describe('scanTokens', () => {
+  it('scans structured references as one exact path', () => {
+    expect(scanReferences('open @{docs/space name.md} now')).toEqual([{
+      index: 4,
+      token: 'docs/space name.md',
+      exact: true,
+    }])
+    expect(scanTokens('open @{docs/space name.md} now')).toEqual(['docs/space name.md'])
+  })
+
   it('collects @ mentions and backtick paths', () => {
     expect(scanTokens('fix @a/b.ts and `c/d/`')).toEqual(['a/b.ts', 'c/d/'])
   })

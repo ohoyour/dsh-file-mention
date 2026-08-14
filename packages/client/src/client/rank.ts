@@ -130,7 +130,9 @@ export function buildMentionCounts(rows: readonly RankableRow[]): Map<string, nu
 }
 
 /**
- * The inserted plain-text mention for one row: `@<minimal unique suffix>`.
+ * The legacy plain-text mention for one row: `@<minimal unique suffix>`.
+ * Structured menu picks no longer use this form, but the roll remains for
+ * hand-typed legacy references and old drafts.
  * Base form — files: `parent-last-segment/name`, directories: `name` — is
  * extended one path segment at a time while its flattened token collides
  * with another row's suffix. `src/views/kabuto/statistics/warning-disposal-report/index.vue`

@@ -129,25 +129,62 @@ describe('file-mention client source', () => {
     ])
   })
 
-  it('does not offer paths whose mention token cannot be scanned as a chip', async () => {
+  it('offers paths containing spaces through structured references', async () => {
     const invalid = { type: 'file' as const, path: 'docs/bad name.txt', name: 'bad name.txt', dir: 'docs' }
     const list = vi.fn(async () => ({
       ok: true as const,
       value: { files: [...FIXTURE, invalid], cacheTtlMs: 10_000 },
     }))
     const { source } = await setup(list)
-    expect(await source.candidates(SESSION, REQ('bad'))).toEqual([])
-    expect(source.lexicon?.(SESSION)).not.toContain('docs-bad name-txt')
+    expect(await source.candidates(SESSION, REQ('bad'))).toEqual([{
+      name: 'bad name.txt',
+      description: 'docs',
+      icon: '📄',
+    }])
+    expect(source.onPick(PICK('bad name.txt'))).toEqual({
+      insert: {
+        source: 'file-mention',
+        ref: 'docs/bad name.txt',
+        label: 'bad name.txt',
+        clipboardText: '@{docs/bad name.txt}',
+      },
+    })
   })
 
-  it('picks insert the full chip-compatible flattened @ token', async () => {
+  it('picks a structured reference with the exact workspace path', async () => {
     const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     await source.candidates(SESSION, REQ('index'))
-    expect(source.onPick(PICK('index.vue'))).toEqual({ text: '@warning-disposal-report-index-vue ' })
+    expect(source.onPick(PICK('index.vue'))).toEqual({
+      insert: {
+        source: 'file-mention',
+        ref: 'warning-disposal-report/index.vue',
+        label: 'index.vue',
+        clipboardText: '@{warning-disposal-report/index.vue}',
+      },
+    })
 
     await source.candidates(SESSION, REQ('warning'))
-    expect(source.onPick(PICK('warning-disposal-report/'))).toEqual({ text: '@warning-disposal-report ' })
+    expect(source.onPick(PICK('warning-disposal-report/'))).toEqual({
+      insert: {
+        source: 'file-mention',
+        ref: 'warning-disposal-report',
+        label: 'warning-disposal-report/',
+        clipboardText: '@{warning-disposal-report}',
+      },
+    })
+  })
+
+  it('serializes exact references through the source codec', async () => {
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const { source } = await setup(list)
+    expect(source.codec?.clipboardText('docs/bad name.txt')).toBe('@{docs/bad name.txt}')
+    await expect(source.codec?.serialize('docs/a%7Db.md', new AbortController().signal))
+      .resolves.toBe('@{docs/a%257Db.md}')
+    const aborted = new AbortController()
+    aborted.abort()
+    await expect(source.codec?.serialize('docs/a.md', aborted.signal))
+      .rejects.toThrow('serialization aborted')
   })
 
   it('exposes the flattened mention lexicon and notifies subscribers on settle', async () => {

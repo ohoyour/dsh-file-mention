@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "DeepSeek Harness profile bundle for @file/@directory mentions: the file-mention host plugin and its web client.",
   "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "license": "MIT",
   "main": "./lib/index.js",
   "exports": {

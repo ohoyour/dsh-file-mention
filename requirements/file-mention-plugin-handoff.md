@@ -15,14 +15,14 @@
 1. 输入框输入 `@文件名/目录名片段`，弹出候选列表（文件名/目录名 + 所在目录，
    `↑↓` 选择，**Enter** 确认，鼠标点击亦可）。
    - 文件：`📄` 图标；目录：`📁` 图标、名称带 `/` 后缀（Codex 惯例）。
-2. 确认后输入框插入 **`@上级目录/名字`**（纯文本 token，使用最短无歧义后缀）；
-   **目录追加 `/` 后缀**，如 `@warning-disposal-report/`。内置 lexicon 将该 token
-   装饰为 chip，避免固定宽度 occurrence chip 截断长路径。
+2. 确认后输入框插入 Harness 原生结构化引用 chip，引用内部保存准确的工作区相对路径，
+   发送时通过 `ReferenceCodec` 序列化为 `@{精确路径}`。旧式纯文本 token 仅作为手输兼容入口；
+   目录 chip 的显示标签继续追加 `/`。
 3. 发送后，模型上下文自动附带引用内容：
    - **@file** → 该文件完整内容（注入为上下文消息，含完整相对路径）；
    - **@dir** → 该目录的**递归树快照 + 目录内（小）文件内容**（对齐 Codex 的目录提及，
      带预算上限，见下）。
-4. 对话区展示与输入框同一段纯文本 token；Host 在 pre-step 边界解析并注入上下文。
+4. 对话区展示与输入框同一引用；Host 在 pre-step 边界解析序列化后的结构化路径并注入上下文。
 5. 候选列表**不得闪烁**：索引到客户端本地缓存后本地过滤，击键不发起逐键 RPC。
 
 ---
@@ -33,7 +33,7 @@
 | --- | --- | --- |
 | M0 | 建仓脚手架：pnpm monorepo + tsdown 构建 + `dsh` 元数据字段 | 两个包可 `pnpm build` 出 `lib/` 与类型声明 |
 | M1 | Host 插件包：索引 Remote 服务（**文件+目录**）+ pre-step 注入（**@file 内容 / @dir 树+内容**） | 单测：`list` 返回含目录的索引；pre-step 对 `@path`/`` `short` ``/`` `short/` `` 正确注入并落盘 |
-| M2 | Web 客户端插件包：`@` 触发源（本地索引缓存 + 候选过滤 + 短路径插入，目录带 `/`） | 浏览器测试：候选平滑无闪烁；选中文件→`` `父目录/文件名` ``，选中目录→`` `父目录/目录名/` `` |
+| M2 | Web 客户端插件包：`@` 触发源（本地索引缓存 + 候选过滤 + 结构化引用插入） | 浏览器测试：候选平滑无闪烁；选中文件/目录后保留准确 `ref` 与可见 label |
 | M3 | 发布 Bundle 包 + 组合行（host 行 + dsh.client 行） | `pnpm publish` 成功；目标机 profile 加 bundle 后 `dsh web` 重启可见 |
 | M4 | 安装与回归 | 重启 DSH 进程后插件仍在（永久性验证）；新会话可用 |
 
@@ -194,9 +194,10 @@ file-mention/
 >   - 同名（basename 相同，目录按带 `/` 的名比较）时 name 改为 `dir/名字` 保证唯一
 >     （菜单 React key 依赖唯一 name）。
 > - `onPick(pick)`：维护 `sessionId → Map<name, row>`（每次 candidates 结果刷新）；
->   由 `pick.candidate.name` 取回条目后构造 `@<最短无歧义后缀>`，目录保留尾部 `/`，
->   返回 `{ text: '@token ' }`。同时实现 `lexicon` 与 `subscribeLexicon`，让手输 token
->   也能被装饰为 chip，并在索引加载完成后刷新装饰。
+>   由 `pick.candidate.name` 取回条目后返回 `{ insert: { source, ref, label,
+>   clipboardText } }`，其中 `ref` 是准确工作区相对路径、`label` 是候选显示文本。
+>   同时提供 `codec.clipboardText` 与 `codec.serialize`，在发送时序列化为 `@{path}`；
+>   `lexicon` 仅保留给手输旧式 token 的兼容装饰。
 > - 所有 `remote` 调用 try/catch，失败返回 `[]` 并 console.error。
 
 ### Prompt 3 — Bundle、组合注册与发布安装（M3/M4）
@@ -255,7 +256,7 @@ file-mention/
 
 ## 5. 已知限制（写入 README）
 
-- 路径含空格的引用不支持（token 以空白分隔）。
+- 旧式手输 token 的路径含空格仍不支持；菜单选择的结构化引用支持空格路径。
 - 用户气泡不渲染 markdown：对话区中反引号为字面文本（内置 UI 行为）。
 - 菜单分组标题固定显示 `file`（语言包独占限制）。
 - 同短名后缀匹配上限 2 条，超过则跳过注入（防误注入）。
