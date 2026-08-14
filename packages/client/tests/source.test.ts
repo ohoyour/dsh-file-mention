@@ -155,6 +155,29 @@ describe('file-mention client source', () => {
     ])
   })
 
+  it('does not start an incomplete-index query after its signal is superseded', async () => {
+    const list = vi.fn(async (_sessionId: string, request: { query?: string }) => ({
+      ok: true as const,
+      value: {
+        files: request.query === '' ? [FIXTURE[0]!] : [FIXTURE[1]!],
+        complete: false,
+        cacheTtlMs: 10_000,
+      },
+    }))
+    const { source } = await setup(list)
+    const aborted = new AbortController()
+    const pending = source.candidates(SESSION, {
+      query: 'warning',
+      position: 'leading',
+      signal: aborted.signal,
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    aborted.abort()
+
+    await expect(pending).resolves.toEqual([])
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
   it('disambiguates clashing basenames', async () => {
     const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
@@ -277,6 +300,7 @@ describe('file-mention client source', () => {
       signal: aborted.signal,
     })
     expect(candidates).toEqual([])
+    expect(list).not.toHaveBeenCalled()
   })
 
   it('prewarms through the warm hook', async () => {

@@ -191,6 +191,7 @@ file-mention/
 >   `complete: false` 时，非空 query 通过 Host 查询，并按 query 做有界 TTL 缓存；
 >   数据源为 `ctx.remote.fileIndex.list(session.sessionId, { query: '' })`
 >   （首次取快照，返回 `{ files: [{type,path,name,dir}], complete, cacheTtlMs }`，其中 TTL 由 Host 配置）。
+>   不完整快照的非空 query 由 Client 做 50ms 可取消防抖；被后续 query 替代的请求不发起 RPC。
 > - `candidates(session, { query, signal })`：缓存就绪后**纯本地**过滤排序
 >   （与 host 同规则，取前 20），`await` 后检查 `signal.aborted` 返回 `[]`；
 >   生成候选：

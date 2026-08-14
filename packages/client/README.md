@@ -15,7 +15,8 @@ input-trigger source** (`trigger: '@'`, `name: 'file'`, `order: -1`).
   `complete: false` because the workspace exceeds the index cap, each distinct
   non-empty query is resolved remotely and retained in a bounded per-session
   TTL cache. The Host shares one bounded metadata catalog across those queries,
-  avoiding repeated workspace walks while typing.
+  avoiding repeated workspace walks while typing. Incomplete-mode queries use a
+  50 ms abort-aware debounce, so superseded keystrokes do not start an RPC.
 - Candidates: files `📄` `name` + parent-dir description; directories `📁`
   `name/`; clashing basenames become `dir/名字` (directories keep `/`) so menu
   React keys stay unique.

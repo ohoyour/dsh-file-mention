@@ -74,6 +74,24 @@ interface MentionRoll {
 /** Bound browser memory when one page visits many sessions. */
 const MAX_SESSION_CACHE_ENTRIES = 64
 const MAX_QUERY_CACHE_ENTRIES = 32
+const INCOMPLETE_QUERY_DEBOUNCE_MS = 50
+
+/** Resolve false instead of rejecting when a superseded menu query aborts. */
+function waitForQueryDebounce(signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false)
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(true)
+    }, INCOMPLETE_QUERY_DEBOUNCE_MS)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      resolve(false)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 /**
  * Client plugin body: mount the `fileIndex` Remote namespace, then register
@@ -208,11 +226,16 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const ensureCandidates = async (
     sessionId: string,
     query: string,
+    signal: AbortSignal,
   ): Promise<readonly IndexRowWire[]> => {
+    if (signal.aborted) return []
     const rows = await ensureIndex(sessionId)
+    if (signal.aborted) return []
     const entry = entries.get(sessionId)
     const queryKey = query.trim()
     if (entry === undefined || entry.complete !== false || queryKey === '') return rows
+    if (!await waitForQueryDebounce(signal)) return []
+    if (signal.aborted) return []
 
     const existing = entry.queries.get(queryKey)
     if (existing !== undefined) {
@@ -261,7 +284,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     },
     async candidates(session, { query, signal }) {
       try {
-        const rows = await ensureCandidates(session.sessionId, query)
+        const rows = await ensureCandidates(session.sessionId, query, signal)
         // Superseded keystroke: the shared fetch stays warm, this caller yields.
         if (signal.aborted) return []
         // Structured picks do not need to satisfy the legacy plain-text chip
