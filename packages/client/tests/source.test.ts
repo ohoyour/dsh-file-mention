@@ -34,7 +34,6 @@ async function setup(list: unknown) {
       mounted.push(contribution)
       return async () => {}
     },
-    fileIndex: { list },
   }
   const registered: InputTriggerSource[] = []
   const inputTriggers = {
@@ -45,6 +44,9 @@ async function setup(list: unknown) {
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   root.provide('remote', remote as any)
+  // The mounted namespace is a separate service read via ctx.get.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  root.provide('remote.fileIndex', { list } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   root.provide('inputTriggers', inputTriggers as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -21,16 +21,29 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 // Type-only: brings the api-remotes Context merge (ctx.remote) into scope.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
 import type { IndexRowWire } from './remote.ts'
 import { rankRows, shortForm, uniqueCandidates } from './rank.ts'
 
 export const name = 'file-mention'
 
-/** Required services: the Remote carrier and the input-trigger registry. */
+/**
+ * Required services: the Remote carrier and the input-trigger registry.
+ * Deliberately NOT `remote.fileIndex`: this plugin mounts that namespace
+ * itself during apply, and a Cordis fiber waits for its injects BEFORE apply
+ * runs — declaring it would deadlock. The namespace is therefore read with
+ * `ctx.get` (the inject-free store read) after the mount settles; nested
+ * `ctx.remote.fileIndex` property access would demand the inject and throw.
+ */
 export const inject = ['remote', 'inputTriggers']
 
 const INDEX_TTL_MS = 10_000
+
+/** The mounted `remote.fileIndex` namespace service shape. */
+interface FileIndexNamespace {
+  list(agentId: string, request: { query?: string }): Promise<RemoteResult<{ files: readonly IndexRowWire[] }>>
+}
 
 /** One session's index fetch: shared promise plus its settled snapshot. */
 interface IndexEntry {
@@ -46,6 +59,10 @@ interface IndexEntry {
 export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const disposeRemote = await ctx.remote.$mount(TYPERT_REMOTE)
   const inputTriggers = ctx.get('inputTriggers') as InputTriggerServiceContract
+  const fileIndex = ctx.get('remote.fileIndex') as FileIndexNamespace | undefined
+  if (fileIndex === undefined) {
+    throw new Error('file-mention: remote.fileIndex namespace did not mount')
+  }
 
   // Plugin-closure state, torn down by the returned disposer.
   const entries = new Map<string, IndexEntry>()
@@ -68,7 +85,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       promise: Promise.resolve([] as readonly IndexRowWire[]),
     }
     entry.promise = (async () => {
-      const answered = await ctx.remote.fileIndex.list(sessionId, { query: '' })
+      const answered = await fileIndex.list(sessionId, { query: '' })
       if (!answered.ok) {
         throw new Error(`fileIndex.list failed: ${answered.error.code}: ${answered.error.message}`)
       }
