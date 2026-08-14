@@ -15,6 +15,15 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const { Context } = require('@deepseek-ai/cordis')
 
+const hostTypert = await import(new URL('../packages/host/lib/typert.host.js', import.meta.url))
+const hostInvocation = hostTypert.TYPERT?.invocations?.find((entry) => entry.id.endsWith('#fileIndex/list'))
+if (hostTypert.TYPERT?.package !== '@ohoyo/dsh-file-mention-host' || hostInvocation === undefined) {
+  throw new Error('Host Typert artifact did not expose fileIndex/list')
+}
+if (hostInvocation.result?.mode !== 'strict' || hostInvocation.parameters?.length !== 2) {
+  throw new Error('Host Typert artifact has an invalid fileIndex/list contract')
+}
+
 const FIXTURE = [
   { type: 'directory', path: 'warning-disposal-report', name: 'warning-disposal-report', dir: '' },
   { type: 'file', path: 'warning-disposal-report/index.vue', name: 'index.vue', dir: 'warning-disposal-report' },

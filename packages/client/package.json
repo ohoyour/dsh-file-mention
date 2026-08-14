@@ -1,6 +1,6 @@
 {
   "name": "@ohoyo/dsh-client-ui-file-mention",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness web client plugin: the '@' input-trigger source for @file/@directory mentions.",
   "type": "module",
   "engines": {

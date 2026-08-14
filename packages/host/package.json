@@ -1,6 +1,6 @@
 {
   "name": "@ohoyo/dsh-file-mention-host",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness host plugin for @file and @directory mentions: workspace file index Remote service and pre-step reference injection.",
   "type": "module",
   "engines": {
@@ -14,15 +14,21 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "lib/typert.host.js",
+    "lib/typert.host.d.ts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsdown",
+    "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsdown && node scripts/promote-typert.mjs",
     "prepare": "pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run tests"
@@ -34,7 +40,8 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.5",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.5"
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.5",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
