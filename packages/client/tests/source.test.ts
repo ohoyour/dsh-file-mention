@@ -221,7 +221,7 @@ describe('file-mention client source', () => {
     ])
   })
 
-  it('offers paths containing spaces through structured references', async () => {
+  it('offers paths containing spaces through exact plain-text references', async () => {
     const invalid = { type: 'file' as const, path: 'docs/bad name.txt', name: 'bad name.txt', dir: 'docs' }
     const list = vi.fn(async () => ({
       ok: true as const,
@@ -233,38 +233,17 @@ describe('file-mention client source', () => {
       description: 'docs',
       icon: '📄',
     }])
-    expect(source.onPick(PICK('bad name.txt'))).toEqual({
-      insert: {
-        source: 'file-mention',
-        ref: 'docs/bad name.txt',
-        label: 'bad name.txt',
-        clipboardText: '@{docs/bad name.txt}',
-      },
-    })
+    expect(source.onPick(PICK('bad name.txt'))).toEqual({ text: '@{docs/bad name.txt}' })
   })
 
-  it('picks a structured reference with the exact workspace path', async () => {
+  it('picks highlighted legacy references for representable files and directories', async () => {
     const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     await source.candidates(SESSION, REQ('index'))
-    expect(source.onPick(PICK('index.vue'))).toEqual({
-      insert: {
-        source: 'file-mention',
-        ref: 'warning-disposal-report/index.vue',
-        label: 'index.vue',
-        clipboardText: '@{warning-disposal-report/index.vue}',
-      },
-    })
+    expect(source.onPick(PICK('index.vue'))).toEqual({ text: '@warning-disposal-report-index-vue' })
 
     await source.candidates(SESSION, REQ('warning'))
-    expect(source.onPick(PICK('warning-disposal-report/'))).toEqual({
-      insert: {
-        source: 'file-mention',
-        ref: 'warning-disposal-report',
-        label: 'warning-disposal-report/',
-        clipboardText: '@{warning-disposal-report}',
-      },
-    })
+    expect(source.onPick(PICK('warning-disposal-report/'))).toEqual({ text: '@warning-disposal-report' })
   })
 
   it('serializes exact references through the source codec', async () => {

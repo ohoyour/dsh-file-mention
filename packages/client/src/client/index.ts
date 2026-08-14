@@ -5,10 +5,10 @@
  * of the Host index (Host-configured TTL, single-flight) backs local filtering
  * when the snapshot is complete. A capped Host snapshot is marked incomplete;
  * in that case repeated query strings use a bounded per-session query cache
- * while each distinct query is resolved remotely. A pick inserts a structured
- * `ReferenceInsert` carrying the exact workspace-relative path; the source
- * codec serializes it only when the message is sent, so labels are independent
- * from path syntax.
+ * while each distinct query is resolved remotely. A pick inserts the exact
+ * workspace-relative path as plain `@{...}` text, so the complete reference
+ * remains visible in the composer instead of being forced into Harness's
+ * fixed-width reference chip.
  *
  * The plugin mounts its own Typert contribution (`remote.fileIndex`) through
  * `ctx.remote.$mount` — the third-party equivalent of what
@@ -298,8 +298,8 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         const rows = await ensureCandidates(session.sessionId, query, signal)
         // Superseded keystroke: the shared fetch stays warm, this caller yields.
         if (signal.aborted) return []
-        // Structured picks do not need to satisfy the legacy plain-text chip
-        // lexicon, so paths with spaces and other punctuation remain visible.
+        // Plain picks use the exact structured text form below, so paths with
+        // spaces and other punctuation remain visible without a legacy token.
         const ranked = rankRows(rows, query, 20)
         const unique = uniqueCandidates(ranked)
         picks.set(session.sessionId, new Map(unique.map(item => [item.name, item.row])))
@@ -316,14 +316,18 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     onPick({ session, candidate }) {
       const row = picks.get(session.sessionId)?.get(candidate.name)
       if (row === undefined) return undefined
-      return {
-        insert: {
-          source: name,
-          ref: row.path,
-          label: candidate.name,
-          clipboardText: serializeFileReference(row.path),
-        },
+      // A complete index gives us the same suffix-count table the Host uses
+      // for legacy references. Those plain @tokens receive Harness's native
+      // text-ref highlight while still resolving to this exact row. Keep the
+      // structured form for capped indexes and names that cannot be scanned
+      // by the legacy input decorator (for example paths containing spaces).
+      const entry = entries.get(session.sessionId)
+      const counts = rolls.get(session.sessionId)?.counts
+      if (entry?.complete === true && counts !== undefined) {
+        const token = mentionName(row, counts)
+        if (isMentionName(token)) return { text: `@${token}` }
       }
+      return { text: serializeFileReference(row.path) }
     },
     lexicon(session) {
       // Mention names of the settled cache: the composer chips hand-typed
