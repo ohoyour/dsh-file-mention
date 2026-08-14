@@ -1,0 +1,24 @@
+# Workspace: the three @ohoyo packages under packages/.
+packages:
+  - packages/*
+
+# The DeepSeek Harness prereleases on the registry mirror can be less than a
+# day old; the supply-chain minimum-release-age policy would reject them.
+minimumReleaseAge: 0
+
+# Debug-era linkage (see handoff Prompt 0.3): every @deepseek-ai/dsh-* build
+# and runtime dependency is pinned to the local deepseek-harness checkout
+# (version 0.1.0-rc.5 — the exact runtime this deployment runs), so the
+# published package.json version ranges resolve to the checkout copies
+# instead of drifted registry releases. Remove this block once the packages
+# are published against a registry that carries matching versions.
+overrides:
+  '@deepseek-ai/cordis': 'link:D:/ProgramData/deepseek-harness/vendor/cordis'
+  '@deepseek-ai/cordis-plugin-loader': 'link:D:/ProgramData/deepseek-harness/vendor/loader'
+  '@deepseek-ai/dsh-agent': 'link:D:/ProgramData/deepseek-harness/packages/core/agent'
+  '@deepseek-ai/dsh-api-remotes': 'link:D:/ProgramData/deepseek-harness/packages/api/remotes'
+  '@deepseek-ai/dsh-client-runtime': 'link:D:/ProgramData/deepseek-harness/packages/client/runtime'
+  '@deepseek-ai/dsh-client-ui-input-trigger': 'link:D:/ProgramData/deepseek-harness/packages/client/ui-input-trigger'
+  '@deepseek-ai/dsh-fs': 'link:D:/ProgramData/deepseek-harness/packages/fs/fs'
+  '@deepseek-ai/dsh-llm': 'link:D:/ProgramData/deepseek-harness/packages/llm/llm'
+  '@deepseek-ai/dsh-typert-protocol': 'link:D:/ProgramData/deepseek-harness/packages/typert/protocol'

@@ -1,0 +1,9 @@
+node_modules/
+coverage/
+*.tsbuildinfo
+
+# Built artifacts (the bundle package keeps a hand-written lib/index.js —
+# re-include it below).
+lib/
+!packages/bundle/lib/
+!packages/bundle/lib/index.js
