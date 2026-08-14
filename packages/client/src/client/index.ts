@@ -2,7 +2,7 @@
  * Browser half of the file-mention plugin: the `@` input-trigger source.
  *
  * Flicker-free candidates are the core requirement: a sessionId-level cache
- * of the full Host index (TTL 10 s, single-flight, fetched once with
+ * of the full Host index (Host-configured TTL, single-flight, fetched once with
  * `query: ''`) backs pure-local per-keystroke filtering with the same
  * ranking rules the Host uses. A pick inserts the chip-compatible plain-text
  * reference `@<minimal unique suffix>` (files: `parent/name`, directories:
@@ -24,7 +24,7 @@ import type {
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
-import type { IndexRowWire } from './remote.ts'
+import type { IndexResultWire, IndexRowWire } from './remote.ts'
 import './menu-styles.ts'
 import {
   buildMentionCounts, mentionName, mentionToken, rankRows, uniqueCandidates,
@@ -42,11 +42,9 @@ export const name = 'file-mention'
  */
 export const inject = ['remote', 'inputTriggers']
 
-const INDEX_TTL_MS = 10_000
-
 /** The mounted `remote.fileIndex` namespace service shape. */
 interface FileIndexNamespace {
-  list(agentId: string, request: { query?: string }): Promise<RemoteResult<{ files: readonly IndexRowWire[] }>>
+  list(agentId: string, request: { query?: string }): Promise<RemoteResult<IndexResultWire>>
 }
 
 /** One session's index fetch: shared promise plus its settled snapshot. */
@@ -54,6 +52,7 @@ interface IndexEntry {
   promise: Promise<readonly IndexRowWire[]>
   rows?: readonly IndexRowWire[]
   settledAt?: number
+  ttlMs?: number
 }
 
 /** One session's mention roll: suffix-token frequencies + per-row names. */
@@ -93,7 +92,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   }
 
   /**
-   * SessionId-level index cache: TTL 10 s + single-flight. A failed fetch
+   * SessionId-level index cache: Host-configured TTL + single-flight. A failed fetch
    * drops the key so the next keystroke retries instead of caching failure.
    * Settling (success or failure) notifies the lexicon listeners so the
    * composer re-scans draft decorations.
@@ -101,7 +100,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const ensureIndex = (sessionId: string): Promise<readonly IndexRowWire[]> => {
     const existing = entries.get(sessionId)
     if (existing !== undefined) {
-      if (existing.rows !== undefined && Date.now() - (existing.settledAt ?? 0) < INDEX_TTL_MS) {
+      if (existing.rows !== undefined && Date.now() - (existing.settledAt ?? 0) < (existing.ttlMs ?? 0)) {
         return Promise.resolve(existing.rows)
       }
       if (existing.settledAt === undefined) return existing.promise
@@ -121,6 +120,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       if (current === entry) {
         current.rows = rows
         current.settledAt = Date.now()
+        current.ttlMs = answered.value.cacheTtlMs
         rolls.set(sessionId, { counts, names: rows.map(row => mentionName(row, counts)) })
       }
       notifyLexicon(sessionId)

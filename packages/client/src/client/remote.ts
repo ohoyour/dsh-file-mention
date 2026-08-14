@@ -23,6 +23,7 @@ export interface IndexRowWire {
 /** Wire result of `fileIndex/list`. */
 export interface IndexResultWire {
   readonly files: readonly IndexRowWire[]
+  readonly cacheTtlMs: number
 }
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -41,7 +42,10 @@ const indexRowSchema = z.object({
 })
 
 const listRequestSchema = z.object({ query: z.string().optional() }).readonly()
-const listResultSchema = z.object({ files: z.array(indexRowSchema).readonly() }).readonly()
+const listResultSchema = z.object({
+  files: z.array(indexRowSchema).readonly(),
+  cacheTtlMs: z.number(),
+}).readonly()
 
 /** The contribution mounted by the client plugin's apply. */
 export const TYPERT_REMOTE: TypertRemoteContribution = {

@@ -9,7 +9,7 @@ input-trigger source** (`trigger: '@'`, `name: 'file'`, `order: -1`).
   (`ctx.remote.$mount(TYPERT_REMOTE)`, namespace `fileIndex` — the third-party
   equivalent of what `@deepseek-ai/dsh-api-remotes` does for built-in namespaces),
   then registers the source.
-- **No per-keystroke RPC**: a sessionId-level cache (TTL 10 s + single-flight)
+- **No per-keystroke RPC**: a sessionId-level cache (host-configured TTL + single-flight)
   fetches the full index once (`fileIndex.list(sessionId, { query: '' })`) and
   `candidates()` filters/ranks locally with the same rules as the Host — the
   flicker-free guarantee.
@@ -39,7 +39,7 @@ modules node half scans into `window.__DSH_BOOT__` and serves as
 pnpm build && pnpm test
 ```
 
-Tests (vitest, 14 cases) cover contribution mounting, single-flight caching,
+Tests (vitest, 17 cases) cover contribution mounting, single-flight caching,
 local filtering, basename disambiguation, short-form picks (file/directory),
 failure containment, aborted keystrokes, and the warm hook.
 

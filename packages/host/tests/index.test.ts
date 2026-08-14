@@ -4,7 +4,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import AgentRegistry, { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import FileIndexService, { name, scanTokens } from '../src/index.ts'
+import FileIndexService, { Config, name, scanTokens } from '../src/index.ts'
 
 // ── fake fs backend ──────────────────────────────────────────────────────────
 //
@@ -115,11 +115,11 @@ function makeAgent(cwd: string): Agent {
   return { id: 'agent-1', session: { header: { cwd }, events: [] } } as unknown as Agent
 }
 
-function setup(): { service: FileIndexService; agent: Agent } {
+function setup(config?: Config): { service: FileIndexService; agent: Agent } {
   const root = new Context()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   root.provide('fs', fakeFs(TREE) as any)
-  return { service: new FileIndexService(root), agent: makeAgent(CWD) }
+  return { service: new FileIndexService(root, config), agent: makeAgent(CWD) }
 }
 
 function injectedTexts(decision: PreStepDecision): string[] {
@@ -135,6 +135,17 @@ const signal = (): AbortSignal => new AbortController().signal
 // ── index tests (M1 acceptance: list returns files AND directories) ──────────
 
 describe('FileIndexService.list', () => {
+  it('exposes a class Config schema and applies deployment overrides', async () => {
+    expect(FileIndexService.Config).toBe(Config)
+    const defaults = Config()
+    expect(defaults.indexTtlMs).toBe(15_000)
+
+    const { service, agent } = setup({ ...defaults, indexLimit: 1, indexTtlMs: 1_234 })
+    const result = await service.list(agent, { query: '' })
+    expect(result.files).toHaveLength(1)
+    expect(result.cacheTtlMs).toBe(1_234)
+  })
+
   it('returns a full index including directory rows', async () => {
     const { service, agent } = setup()
     const result = await service.list(agent, { query: '' })
@@ -166,7 +177,7 @@ describe('FileIndexService.list', () => {
   it('returns an empty index when the session has no cwd', async () => {
     const { service, agent } = setup()
     const noCwd = { ...agent, session: { header: {}, events: [] } } as unknown as Agent
-    await expect(service.list(noCwd, { query: '' })).resolves.toEqual({ files: [] })
+    await expect(service.list(noCwd, { query: '' })).resolves.toEqual({ files: [], cacheTtlMs: 15_000 })
   })
 })
 

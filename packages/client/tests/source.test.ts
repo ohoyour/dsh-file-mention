@@ -57,7 +57,14 @@ async function setup(list: unknown) {
   root.provide('remote', remote as any)
   // The mounted namespace is a separate service read via ctx.get.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  root.provide('remote.fileIndex', { list } as any)
+  const listWithCacheTtl = async (...args: unknown[]) => {
+    const response = await (list as (...args: unknown[]) => Promise<any>)(...args)
+    if (response.ok && response.value.cacheTtlMs === undefined) {
+      return { ...response, value: { ...response.value, cacheTtlMs: 10_000 } }
+    }
+    return response
+  }
+  root.provide('remote.fileIndex', { list: listWithCacheTtl } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   root.provide('inputTriggers', inputTriggers as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

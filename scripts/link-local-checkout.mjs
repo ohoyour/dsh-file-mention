@@ -4,15 +4,20 @@
  * handoff's Prompt 0.3). The committed workspace file carries no overrides,
  * so a fresh clone resolves @deepseek-ai/dsh-* from the npm registry.
  *
- * Usage: node scripts/link-local-checkout.mjs [checkout-root]
- *        (defaults to D:/ProgramData/deepseek-harness on this machine)
+ * Usage: node scripts/link-local-checkout.mjs <checkout-root>
+ *        or set DEEPSEEK_HARNESS_CHECKOUT.
  *
  * After running: pnpm install
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 
-const checkout = (process.argv[2] ?? 'D:/ProgramData/deepseek-harness').replace(/\\/g, '/')
+const checkoutArg = process.argv[2] ?? process.env.DEEPSEEK_HARNESS_CHECKOUT
+if (checkoutArg === undefined || checkoutArg.trim() === '') {
+  console.error('Usage: pnpm link:checkout -- <deepseek-harness checkout-root>')
+  process.exit(1)
+}
+const checkout = checkoutArg.replace(/\\/g, '/')
 if (!existsSync(`${checkout}/pnpm-workspace.yaml`)) {
   console.error(`link-local-checkout: deepseek-harness checkout not found at ${checkout}`)
   process.exit(1)

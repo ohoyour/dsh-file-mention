@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "build": "node -e \"console.log('bundle has no compiled entry')\"",
+    "prepare": "node scripts/prepare.mjs",
     "typecheck": "node -e \"console.log('bundle has no TypeScript entry')\"",
     "test": "node --test tests/*.test.mjs"
   },

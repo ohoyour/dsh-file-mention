@@ -11,7 +11,7 @@ Typert namespace `fileIndex`, method `@Remote('list') list(agent, request)`:
 - BFS-walks the session workspace (`agent.session.header.cwd`), indexing **files and
   directories** with `{ type, path, name, dir }` rows (relative, forward slashes).
 - Skips noise dirs (`node_modules`, `.git`, `dist`, …), capped at 5000 rows / depth 14.
-- Cached per cwd (TTL 15 s) with single-flight in-flight dedupe.
+- Cached per cwd (default TTL 15 s; configurable) with single-flight in-flight dedupe.
 - `query: ''` returns the whole index (the client filters locally per keystroke);
   otherwise the shared ranking rules apply (base === query > base.startsWith >
   path.startsWith > path.includes, then path length, top 20).
@@ -39,13 +39,21 @@ references (dynamic plugin ids `abc-123` are never hijacked) and resolves them:
 - At most 5 references per turn, deduped by path; every I/O failure is logged and
   skipped — injection never blocks a turn.
 
+## Configuration
+
+The plugin exports a Schemastery `Config` schema. Defaults preserve the limits
+above, while deployments can override index depth/size/TTL and directory/file
+context budgets from the composition row's `config` object. The `fileIndex/list`
+response carries the configured index TTL to the browser so host and client
+caches use one policy.
+
 ## Development
 
 ```sh
 pnpm build && pnpm test
 ```
 
-Tests (vitest, 26 cases) cover the index (files + dirs, noise skipping, ranking),
+Tests (vitest, 32 cases) cover the index (files + dirs, noise skipping, ranking),
 the injection paths (`` `short/` ``, `` `short` ``, `@path`, suffix matching, dedupe,
 5-ref cap, dynamic-id skip, reject/abort passthrough), and a real event-bus
 integration that mounts the plugin as a class plugin and drives the scoped

@@ -22,6 +22,19 @@ The bundle declares both packages as `workspace:^` dependencies (rewritten to
 concrete `^` versions by `pnpm publish`) and ships no compiled entry of its own —
 `lib/index.js` exists only so the package exports `"."` for tooling.
 
+To tune the Host limits in a profile, override the inserted row in that
+profile's `cordis.patch.yml` and keep the package name on the row:
+
+```yaml
+- id: file-mention-host
+  name: '@ohoyo/dsh-file-mention-host'
+  config:
+    indexTtlMs: 30000
+    maxRefsPerTurn: 3
+```
+
+All other fields retain their schema defaults.
+
 ## License
 
 MIT

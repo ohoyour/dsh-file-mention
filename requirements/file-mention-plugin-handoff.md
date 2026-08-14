@@ -15,14 +15,14 @@
 1. 输入框输入 `@文件名/目录名片段`，弹出候选列表（文件名/目录名 + 所在目录，
    `↑↓` 选择，**Enter** 确认，鼠标点击亦可）。
    - 文件：`📄` 图标；目录：`📁` 图标、名称带 `/` 后缀（Codex 惯例）。
-2. 确认后输入框插入 **`` `上级目录/名字` ``**（反引号包裹、父目录+名字）；
-   **目录追加 `/` 后缀**，如 `` `warning-disposal-report/` ``。
+2. 确认后输入框插入 **`@上级目录/名字`**（纯文本 token，使用最短无歧义后缀）；
+   **目录追加 `/` 后缀**，如 `@warning-disposal-report/`。内置 lexicon 将该 token
+   装饰为 chip，避免固定宽度 occurrence chip 截断长路径。
 3. 发送后，模型上下文自动附带引用内容：
    - **@file** → 该文件完整内容（注入为上下文消息，含完整相对路径）；
    - **@dir** → 该目录的**递归树快照 + 目录内（小）文件内容**（对齐 Codex 的目录提及，
      带预算上限，见下）。
-4. 对话区展示与输入框同一段文本（该 GUI 的用户气泡只渲染纯文本，反引号以
-   markdown 源码形式字面显示——内置 UI 的固定行为，插件无法改变，按此验收）。
+4. 对话区展示与输入框同一段纯文本 token；Host 在 pre-step 边界解析并注入上下文。
 5. 候选列表**不得闪烁**：索引到客户端本地缓存后本地过滤，击键不发起逐键 RPC。
 
 ---
@@ -101,9 +101,10 @@ file-mention/
 >
 > **A. 索引 Remote 服务（命名空间 `fileIndex`）**
 > - `export class FileIndexService extends TypertRemoteService`，
->   `constructor(ctx) { super(ctx, 'fileIndex') }`，`static inject = ['fs']`；
+>   `constructor(ctx, config) { super(ctx, 'fileIndex') }`，`static inject = ['fs']`，并将
+>   `static Config` 指向同名 Schemastery schema；
 >   `import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'`。
-> - 方法 `@Remote('list') list(agent: Agent, request: { query?: string }): Promise<{ files: readonly IndexRow[] }>`
+> - 方法 `@Remote('list') list(agent: Agent, request: { query?: string }): Promise<{ files: readonly IndexRow[], cacheTtlMs: number }>`
 >   —— 第一个参数必须是 `agent: Agent`（typert 会把客户端传来的 agentId 解析为活体 Agent，
 >   参考 `DynamicCordisRunnerService` 的 Remote 方法）。
 > - 从 `agent.session.header.cwd` 读工作区绝对路径（`SessionHeader.cwd`，可能为 undefined）。
@@ -112,7 +113,7 @@ file-mention/
 >   .cache,.turbo,.idea,.vscode,vendor,__pycache__,.venv,venv,logs,tmp,temp,.svn,
 >   .hg,obj,.pytest_cache,.mypy_cache`；上限 5000 条、深度 14；**文件与目录都收录**。
 > - 每条 `{ type: 'file' | 'directory', path: 相对路径(正斜杠), name: 名字, dir: 父目录相对路径 }`。
-> - 索引按 cwd 缓存，TTL 15s，单飞（in-flight 去重）。
+> - 索引按 cwd 缓存，默认 TTL 15s（由 `Config.indexTtlMs` 配置），单飞（in-flight 去重）。
 > - `list` 内按 query 过滤排序：base===query(0) > base.startsWith(1) >
 >   path.startsWith(2) > path.includes(3)；同秩按路径长度升序；取前 20；
 >   query 归一化：小写、`\` → `/`。
@@ -161,7 +162,8 @@ file-mention/
 >   source: { kind:'plugin', plugin: name, form:'snapshot',
 >   sections: [{ name, text }] } })`，返回
 >   `{ kind:'enter', messages: [...decision.messages, ...injected] }`。
-> - `apply` 内 `ctx.provide('fileIndex', new FileIndexService(ctx))`。
+> - 类插件构造函数注册 `fileIndex` 服务；所有部署可调限制均通过 `Config` schema 注入，
+>   不在 `apply` 中自行注册或遗留未清理的全局监听器。
 > - 全部 IO 包 try/catch，失败打日志并跳过，绝不阻塞回合。
 
 ### Prompt 2 — Web 客户端插件包（M2）
@@ -172,17 +174,18 @@ file-mention/
 > - `packages/client/ui-input-trigger/src/types.ts`（契约：`InputTriggerSource`、
 >   `CandidateRequest`、`InputTriggerPick`、`PickOutcome`）
 >
-> - 插件对象：`{ name, inject: ['inputTriggers', 'remote.fileIndex'], apply(ctx) {...} }`
->   （`remote.<ns>` 声明式注入会让插件在 Host 命名空间就绪前保持等待）。
+> - 客户端插件声明 `inject: ['remote', 'inputTriggers']`，`apply` 先挂载手写 Typert
+>   contribution，再通过 `ctx.get('remote.fileIndex')` 使用刚挂载的命名空间；不能把
+>   `remote.fileIndex` 同时声明为 inject，否则会在本插件挂载前形成等待环。
 > - `ctx.effect(() => ctx.inputTriggers.registerSource(source), 'label')` 注册 source：
 >   ```
 >   { trigger: '@', name: 'file', order: -1, candidates, warm, onPick }
 >   ```
 >   （`order: -1` 排在 subagent 组之前；`name: 'file'` 即菜单分组标题）。
 > - **本地索引缓存（防闪烁的关键）**：`warm(session)` 与 `candidates` 共用
->   `ensureIndex(sessionId)`——TTL 10s 的 sessionId 级缓存 + 单飞；
+>   `ensureIndex(sessionId)`——使用 Host 返回的 `cacheTtlMs` 的 sessionId 级缓存 + 单飞；
 >   数据源为 `ctx.remote.fileIndex.list(session.sessionId, { query: '' })`
->   （首次一次取全量，返回 `{ files: [{type,path,name,dir}] }`）。
+>   （首次一次取全量，返回 `{ files: [{type,path,name,dir}], cacheTtlMs }`，其中 TTL 由 Host 配置）。
 > - `candidates(session, { query, signal })`：缓存就绪后**纯本地**过滤排序
 >   （与 host 同规则，取前 20），`await` 后检查 `signal.aborted` 返回 `[]`；
 >   生成候选：
@@ -191,12 +194,9 @@ file-mention/
 >   - 同名（basename 相同，目录按带 `/` 的名比较）时 name 改为 `dir/名字` 保证唯一
 >     （菜单 React key 依赖唯一 name）。
 > - `onPick(pick)`：维护 `sessionId → Map<name, row>`（每次 candidates 结果刷新）；
->   由 `pick.candidate.name` 取回条目后构造**短路径**
->   `parent = dir 的最后一段；base = (parent ? parent + '/' : '') + name`；
->   目录再加尾部 `/`；`text = '`' + base + '` '`，返回 `{ text }`
->   （纯文本引用路径，替换 token span）。例：
->   `` `warning-disposal-report/index.vue` ``、`` `warning-disposal-report/` ``。
-> - 不实现 `lexicon`/`codec`/`matchEnter`（与 ui-skill 的 plain-text-reference 决策一致）。
+>   由 `pick.candidate.name` 取回条目后构造 `@<最短无歧义后缀>`，目录保留尾部 `/`，
+>   返回 `{ text: '@token ' }`。同时实现 `lexicon` 与 `subscribeLexicon`，让手输 token
+>   也能被装饰为 chip，并在索引加载完成后刷新装饰。
 > - 所有 `remote` 调用 try/catch，失败返回 `[]` 并 console.error。
 
 ### Prompt 3 — Bundle、组合注册与发布安装（M3/M4）
@@ -215,20 +215,17 @@ file-mention/
 > - 发布：`pnpm publish`（按私有/公共源配置 `publishConfig`）。
 >
 > **本机安装步骤（Ohoyo 的部署，profile 路径已确认）**
-> 1. `cd C:\Users\Ohoyo\.dsh\profiles\web`，把 `@ohoyo/dsh-file-mention` 加入
->    `package.json` 的 `dependencies`，`pnpm install`。
-> 2. 两种注册方式二选一：
->    - 在 `package.json` 的 `dsh.profile.bundles` 数组追加 `"@ohoyo/dsh-file-mention"`；或
->    - 在 `cordis.patch.yml` 手写 `- insert: [ ... ]` 两行（id 同上）。
-> 3. 重启 `dsh web`（进程重启后组合重新装配；这是"永久性"验证点）。
-> 4. 如客户端插件未加载，检查 `pnpm run dev:web` 重建/静态产物路径，刷新页面。
+> 1. 由 `dsh plugin --profile web add @ohoyo/dsh-file-mention` 写入并安装 profile
+>    manifest（不手工维护 package.json 或 bundle 列表）。
+> 2. 重启 `dsh web`（进程重启后组合重新装配；这是"永久性"验证点）。
+> 3. 如客户端插件未加载，检查构建产物路径，刷新页面。
 
 ### Prompt 4 — 验证清单（人工回归）
 
 > 1. 重启 DSH 进程后，插件仍在（组合行存在、无 loading 错误）。
 > 2. 输入 `@warning` → 候选平滑出现（文件 `📄` + 目录 `📁/`），逐键输入无闪烁、无"透出对话区"。
-> 3. Enter 选文件 → 输入框为 `` `warning-disposal-report/index.vue` ``；
->    Enter 选目录 → 输入框为 `` `warning-disposal-report/` ``。
+> 3. Enter 选文件 → 输入框为 `@warning-disposal-report-index-vue`；
+>    Enter 选目录 → 输入框为 `@warning-disposal-report`。
 > 4. 发送文件引用 → 模型读到该文件完整内容（上下文出现 `<file_context>`）。
 > 5. 发送目录引用 → 模型读到目录树 + 小文件内容（上下文出现 `<dir_context>`，
 >    二进制/超大文件被跳过并在统计中体现）。

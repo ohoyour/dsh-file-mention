@@ -22,6 +22,7 @@
 
 import { isAbsolute, relative as relativePath } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import Schema from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
@@ -49,6 +50,38 @@ export interface IndexRequest {
 /** Result shape of the `fileIndex/list` Remote method. */
 export interface IndexResult {
   readonly files: readonly IndexRow[]
+  /** Cache lifetime to use for the client's settled snapshot. */
+  readonly cacheTtlMs: number
+}
+
+/** Deployment controls for indexing and context injection. */
+export interface Config {
+  /** Directory names skipped while indexing and snapshotting. */
+  noiseDirs: string[]
+  /** Maximum number of file and directory rows in one workspace index. */
+  indexLimit: number
+  /** Maximum directory traversal depth for the workspace index. */
+  indexDepth: number
+  /** Workspace index cache lifetime, in milliseconds. */
+  indexTtlMs: number
+  /** Maximum file size read through readText before streaming/truncation. */
+  fileSafeSizeBytes: number
+  /** Maximum characters injected for one referenced file. */
+  fileTextLimit: number
+  /** Maximum directory depth included in a directory snapshot. */
+  dirTreeDepth: number
+  /** Maximum tree lines included in a directory snapshot. */
+  dirTreeLines: number
+  /** Maximum file size eligible for directory snapshot contents. */
+  dirFileSizeBytes: number
+  /** Maximum characters included for one directory snapshot file. */
+  dirFileTextLimit: number
+  /** Maximum number of file contents included in one directory snapshot. */
+  dirFileCount: number
+  /** Maximum total characters in one directory context message. */
+  dirMessageLimit: number
+  /** Maximum references injected during one turn. */
+  maxRefsPerTurn: number
 }
 
 /** One resolved reference: file or directory, identified by its relative path. */
@@ -75,33 +108,70 @@ interface BoundedText {
   readonly truncated: boolean
 }
 
-// ── budgets (see the handoff §0 / §5) ────────────────────────────────────────
+// ── defaults (see the handoff §0 / §5) ────────────────────────────────────────
 
 /** Directories never entered while indexing or snapshotting. */
-const NOISE_DIRS = new Set([
+const DEFAULT_NOISE_DIRS = [
   'node_modules', '.git', 'dist', 'build', 'out', 'coverage', 'target', '.next',
   '.nuxt', '.output', '.nitro', '.cache', '.turbo', '.idea', '.vscode', 'vendor',
   '__pycache__', '.venv', 'venv', 'logs', 'tmp', 'temp', '.svn', '.hg', 'obj',
   '.pytest_cache', '.mypy_cache',
-])
+]
 
-const INDEX_LIMIT = 5000
-const INDEX_DEPTH = 14
-const INDEX_TTL_MS = 15_000
+const DEFAULT_INDEX_LIMIT = 5000
+const DEFAULT_INDEX_DEPTH = 14
+const DEFAULT_INDEX_TTL_MS = 15_000
 
 /** @file: whole-file read threshold; above (or unknown) stream-truncate. */
-const FILE_SAFE_SIZE_BYTES = 400 * 1024
-const FILE_TEXT_LIMIT = 60_000
+const DEFAULT_FILE_SAFE_SIZE_BYTES = 400 * 1024
+const DEFAULT_FILE_TEXT_LIMIT = 60_000
 
 /** @dir: tree snapshot budget. */
-const DIR_TREE_DEPTH = 3
-const DIR_TREE_LINES = 200
-const DIR_FILE_SIZE_BYTES = 32 * 1024
-const DIR_FILE_TEXT_LIMIT = 24_000
-const DIR_FILE_COUNT = 8
-const DIR_MESSAGE_LIMIT = 60_000
+const DEFAULT_DIR_TREE_DEPTH = 3
+const DEFAULT_DIR_TREE_LINES = 200
+const DEFAULT_DIR_FILE_SIZE_BYTES = 32 * 1024
+const DEFAULT_DIR_FILE_TEXT_LIMIT = 24_000
+const DEFAULT_DIR_FILE_COUNT = 8
+const DEFAULT_DIR_MESSAGE_LIMIT = 60_000
 
-const MAX_REFS_PER_TURN = 5
+const DEFAULT_MAX_REFS_PER_TURN = 5
+
+/** Defaults used by the Loader schema and direct unit-test construction. */
+const DEFAULT_CONFIG: Config = {
+  noiseDirs: DEFAULT_NOISE_DIRS,
+  indexLimit: DEFAULT_INDEX_LIMIT,
+  indexDepth: DEFAULT_INDEX_DEPTH,
+  indexTtlMs: DEFAULT_INDEX_TTL_MS,
+  fileSafeSizeBytes: DEFAULT_FILE_SAFE_SIZE_BYTES,
+  fileTextLimit: DEFAULT_FILE_TEXT_LIMIT,
+  dirTreeDepth: DEFAULT_DIR_TREE_DEPTH,
+  dirTreeLines: DEFAULT_DIR_TREE_LINES,
+  dirFileSizeBytes: DEFAULT_DIR_FILE_SIZE_BYTES,
+  dirFileTextLimit: DEFAULT_DIR_FILE_TEXT_LIMIT,
+  dirFileCount: DEFAULT_DIR_FILE_COUNT,
+  dirMessageLimit: DEFAULT_DIR_MESSAGE_LIMIT,
+  maxRefsPerTurn: DEFAULT_MAX_REFS_PER_TURN,
+}
+
+const natural = () => Schema.natural()
+const positiveInteger = () => Schema.natural().min(1)
+
+/** Cordis validates this schema before constructing the service. */
+export const Config: Schema<Config> = Schema.object({
+  noiseDirs: Schema.array(Schema.string()).default([...DEFAULT_NOISE_DIRS]),
+  indexLimit: positiveInteger().default(DEFAULT_INDEX_LIMIT),
+  indexDepth: natural().default(DEFAULT_INDEX_DEPTH),
+  indexTtlMs: positiveInteger().default(DEFAULT_INDEX_TTL_MS),
+  fileSafeSizeBytes: natural().default(DEFAULT_FILE_SAFE_SIZE_BYTES),
+  fileTextLimit: natural().default(DEFAULT_FILE_TEXT_LIMIT),
+  dirTreeDepth: natural().default(DEFAULT_DIR_TREE_DEPTH),
+  dirTreeLines: natural().default(DEFAULT_DIR_TREE_LINES),
+  dirFileSizeBytes: natural().default(DEFAULT_DIR_FILE_SIZE_BYTES),
+  dirFileTextLimit: natural().default(DEFAULT_DIR_FILE_TEXT_LIMIT),
+  dirFileCount: natural().default(DEFAULT_DIR_FILE_COUNT),
+  dirMessageLimit: natural().default(DEFAULT_DIR_MESSAGE_LIMIT),
+  maxRefsPerTurn: natural().default(DEFAULT_MAX_REFS_PER_TURN),
+})
 
 // ── token scanning ───────────────────────────────────────────────────────────
 
@@ -180,9 +250,9 @@ function relFor(cwd: string, token: string): string {
 }
 
 /** Format the `<file_context>` message text (handoff template). */
-function fileContextText(rel: string, read: BoundedText): string {
+function fileContextText(rel: string, read: BoundedText, limit: number): string {
   const content = read.truncated
-    ? `${read.text}\n… [truncated at ${FILE_TEXT_LIMIT} characters]`
+    ? `${read.text}\n… [truncated at ${limit} characters]`
     : read.text
   return [
     '<file_context>',
@@ -198,14 +268,19 @@ function fileContextText(rel: string, read: BoundedText): string {
  */
 export default class FileIndexService extends TypertRemoteService {
   static inject = ['fs']
+  static Config: Schema<Config> = Config
 
+  private readonly config: Config
+  private readonly noiseDirs: ReadonlySet<string>
   private readonly indexCache = new Map<string, { rows: IndexRow[]; at: number }>()
   private readonly indexFlights = new Map<string, Promise<IndexRow[]>>()
   /** Per-agent turn budget: at most 5 injected references per turn, deduped by path. */
   private readonly turnState = new Map<string, { turn: number; paths: Set<string>; count: number }>()
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, config: Config = DEFAULT_CONFIG) {
     super(ctx, 'fileIndex')
+    this.config = config
+    this.noiseDirs = new Set(config.noiseDirs)
     ctx.on('agent/pre-step', (payload, next) => this.handlePreStep(payload, next), { prepend: true })
   }
 
@@ -220,11 +295,11 @@ export default class FileIndexService extends TypertRemoteService {
   async list(agent: Agent, request: IndexRequest): Promise<IndexResult> {
     const rows = await this.ensureIndex(agent)
     const query = request?.query ?? ''
-    if (query.trim() === '') return { files: rows }
-    return { files: rankRows(rows, query, 20) }
+    if (query.trim() === '') return { files: rows, cacheTtlMs: this.config.indexTtlMs }
+    return { files: rankRows(rows, query, 20), cacheTtlMs: this.config.indexTtlMs }
   }
 
-  /** Cached (15 s) single-flight index of the agent's workspace. */
+  /** Cached, single-flight index of the agent's workspace. */
   async ensureIndex(agent: Agent): Promise<IndexRow[]> {
     const cwd = agent.session.header.cwd
     if (cwd === undefined) return []
@@ -233,7 +308,7 @@ export default class FileIndexService extends TypertRemoteService {
 
   private ensureIndexByCwd(cwd: string): Promise<IndexRow[]> {
     const cached = this.indexCache.get(cwd)
-    if (cached !== undefined && Date.now() - cached.at < INDEX_TTL_MS) {
+    if (cached !== undefined && Date.now() - cached.at < this.config.indexTtlMs) {
       return Promise.resolve(cached.rows)
     }
     const flight = this.indexFlights.get(cwd)
@@ -261,7 +336,7 @@ export default class FileIndexService extends TypertRemoteService {
     const queue: Array<{ target: FsTarget; rel: string; depth: number }> = [
       { target: root, rel: '', depth: 0 },
     ]
-    while (queue.length > 0 && rows.length < INDEX_LIMIT) {
+    while (queue.length > 0 && rows.length < this.config.indexLimit) {
       const { target, rel, depth } = queue.shift()!
       let entries: FsDirEntry[]
       try {
@@ -271,12 +346,12 @@ export default class FileIndexService extends TypertRemoteService {
         continue
       }
       for (const entry of entries) {
-        if (rows.length >= INDEX_LIMIT) break
+        if (rows.length >= this.config.indexLimit) break
         const path = rel === '' ? entry.name : `${rel}/${entry.name}`
         if (entry.type === 'directory') {
-          if (NOISE_DIRS.has(entry.name)) continue
+          if (this.noiseDirs.has(entry.name)) continue
           rows.push({ type: 'directory', path, name: entry.name, dir: rel })
-          if (depth < INDEX_DEPTH) {
+          if (depth < this.config.indexDepth) {
             queue.push({ target: entry.target, rel: path, depth: depth + 1 })
           }
         } else if (entry.type === 'file') {
@@ -323,7 +398,7 @@ export default class FileIndexService extends TypertRemoteService {
       for (const block of message.content) {
         if (block.type !== 'text') continue
         for (const token of scanTokens(block.text)) {
-          if (signal.aborted || state.count >= MAX_REFS_PER_TURN) return injected
+          if (signal.aborted || state.count >= this.config.maxRefsPerTurn) return injected
           let hits: RefHit[]
           try {
             hits = await this.resolveRefs(cwd, token, signal)
@@ -332,7 +407,7 @@ export default class FileIndexService extends TypertRemoteService {
             continue
           }
           for (const hit of hits) {
-            if (signal.aborted || state.count >= MAX_REFS_PER_TURN) return injected
+            if (signal.aborted || state.count >= this.config.maxRefsPerTurn) return injected
             if (state.paths.has(hit.path)) continue
             const built = await this.buildRefMessage(hit, cwd, signal)
             if (built === undefined) continue
@@ -425,20 +500,20 @@ export default class FileIndexService extends TypertRemoteService {
     const info = await this.ctx.fs.stat(target, signal)
     if (info === undefined || info.type !== 'file') return undefined
     const read = await this.readFileText(target, info, signal)
-    return fileContextText(hit.path, read)
+    return fileContextText(hit.path, read, this.config.fileTextLimit)
   }
 
   /** readText for small files; streamText with a cap for large/unknown-size ones. */
   private async readFileText(target: FsTarget, info: FsInfo, signal: AbortSignal): Promise<BoundedText> {
-    if (info.size !== undefined && info.size <= FILE_SAFE_SIZE_BYTES) {
-      return bounded(await this.ctx.fs.readText(target, signal), FILE_TEXT_LIMIT)
+    if (info.size !== undefined && info.size <= this.config.fileSafeSizeBytes) {
+      return bounded(await this.ctx.fs.readText(target, signal), this.config.fileTextLimit)
     }
     let out = ''
     for await (const chunk of await this.ctx.fs.streamText(target, signal)) {
       out += chunk
-      if (out.length >= FILE_TEXT_LIMIT) break
+      if (out.length >= this.config.fileTextLimit) break
     }
-    return bounded(out, FILE_TEXT_LIMIT)
+    return bounded(out, this.config.fileTextLimit)
   }
 
   /**
@@ -457,9 +532,9 @@ export default class FileIndexService extends TypertRemoteService {
     const queue: Array<{ target: FsTarget; rel: string; depth: number }> = [
       { target, rel: hit.path, depth: 0 },
     ]
-    while (queue.length > 0 && treeLines.length < DIR_TREE_LINES) {
+    while (queue.length > 0 && treeLines.length < this.config.dirTreeLines) {
       const current = queue.shift()!
-      if (current.depth >= DIR_TREE_DEPTH) continue
+      if (current.depth >= this.config.dirTreeDepth) continue
       let entries: FsDirEntry[]
       try {
         entries = await this.ctx.fs.listDir(current.target, signal)
@@ -467,10 +542,10 @@ export default class FileIndexService extends TypertRemoteService {
         this.warn(`failed to list directory "${current.rel}" for dir context`, error)
         continue
       }
-      const dirs = entries.filter(entry => entry.type === 'directory' && !NOISE_DIRS.has(entry.name))
+      const dirs = entries.filter(entry => entry.type === 'directory' && !this.noiseDirs.has(entry.name))
       const files = entries.filter(entry => entry.type === 'file')
       for (const entry of [...dirs, ...files]) {
-        if (treeLines.length >= DIR_TREE_LINES) break
+        if (treeLines.length >= this.config.dirTreeLines) break
         const rel = `${current.rel}/${entry.name}`
         if (entry.type === 'directory') {
           dirCount += 1
@@ -487,8 +562,8 @@ export default class FileIndexService extends TypertRemoteService {
     // File contents: ≤32 KB text files, binary-sniffed, ≤8 files.
     const sections: Array<{ rel: string; read: BoundedText }> = []
     for (const candidate of contentCandidates) {
-      if (sections.length >= DIR_FILE_COUNT) break
-      if (candidate.size !== undefined && candidate.size > DIR_FILE_SIZE_BYTES) continue
+      if (sections.length >= this.config.dirFileCount) break
+      if (candidate.size !== undefined && candidate.size > this.config.dirFileSizeBytes) continue
       let text: string
       try {
         text = await this.ctx.fs.readText(candidate.target, signal)
@@ -496,14 +571,14 @@ export default class FileIndexService extends TypertRemoteService {
         continue
       }
       if (text.slice(0, 512).includes('\0')) continue
-      sections.push({ rel: candidate.rel, read: bounded(text, DIR_FILE_TEXT_LIMIT) })
+      sections.push({ rel: candidate.rel, read: bounded(text, this.config.dirFileTextLimit) })
     }
 
     const counts = `${fileCount} files, ${dirCount} dirs; contents of ${sections.length} files included`
     const header = `The user referenced this workspace directory: ${hit.path}/ (${counts})`
     // Assemble under one message budget: header + tree first, then file
     // sections, each truncated to the remaining budget.
-    const budgetFor = (prefix: string): number => Math.max(0, DIR_MESSAGE_LIMIT - prefix.length)
+    const budgetFor = (prefix: string): number => Math.max(0, this.config.dirMessageLimit - prefix.length)
     let body = `${header}\n[directory tree]\n${treeLines.join('\n')}`
     const sectionsText: string[] = []
     if (sections.length > 0) {
@@ -521,8 +596,8 @@ export default class FileIndexService extends TypertRemoteService {
       }
     }
     body += `\n${sectionsText.join('\n')}`
-    if (body.length > DIR_MESSAGE_LIMIT) {
-      body = `${body.slice(0, DIR_MESSAGE_LIMIT)}\n… [directory context truncated]`
+    if (body.length > this.config.dirMessageLimit) {
+      body = `${body.slice(0, this.config.dirMessageLimit)}\n… [directory context truncated]`
     }
     return `<dir_context>\n${body}\n</dir_context>`
   }

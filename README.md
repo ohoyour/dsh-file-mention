@@ -10,8 +10,8 @@ DeepSeek Harness 的 **@file / @dir 提及插件**（功能对齐 Codex CLI 的 
 
 | 包 | 说明 |
 | --- | --- |
-| `packages/host` (`@ohoyo/dsh-file-mention-host`) | Host 插件：`fileIndex` Typert Remote 服务（工作区文件+目录索引，cwd 缓存 15s、单飞、上限 5000 条/深度 14）+ `agent/pre-step` 引用注入 |
-| `packages/client` (`@ohoyo/dsh-client-ui-file-mention`) | Web 客户端插件：`@` 触发源（`name: 'file'`、`order: -1`），本地索引缓存（TTL 10s + 单飞）逐键本地过滤，候选无闪烁；occurrence chip 插入 + lexicon 装饰 |
+| `packages/host` (`@ohoyo/dsh-file-mention-host`) | Host 插件：`fileIndex` Typert Remote 服务（工作区文件+目录索引，cwd 默认缓存 15s、单飞、上限 5000 条/深度 14）+ `agent/pre-step` 引用注入 |
+| `packages/client` (`@ohoyo/dsh-client-ui-file-mention`) | Web 客户端插件：`@` 触发源（`name: 'file'`、`order: -1`），按 Host 配置 TTL 的本地索引缓存 + 单飞逐键本地过滤，候选无闪烁；occurrence chip 插入 + lexicon 装饰 |
 | `packages/bundle` (`@ohoyo/dsh-file-mention`) | 发布面 bundle：`dsh.bundle.patch` 指向 `cordis.patch.yml`，同时插入 host 行与 client 行 |
 
 ## 开发
@@ -20,7 +20,7 @@ DeepSeek Harness 的 **@file / @dir 提及插件**（功能对齐 Codex CLI 的 
 pnpm install        # 从 npm registry 解析 @deepseek-ai/dsh-*（rc.6 系）
 pnpm build          # tsdown 构建 lib/（host/client 含类型声明；client.js 为浏览器 factory bundle）
 pnpm typecheck      # tsc --noEmit
-pnpm test           # vitest / node:test（host 31 用例、client 18 用例、bundle 2 用例）
+pnpm test           # vitest / node:test（host 32 用例、client 17 用例、bundle 2 用例）
 pnpm smoke          # 构建产物冒烟（built client.js + cordis Context 驱动）
 ```
 
@@ -29,13 +29,13 @@ pnpm smoke          # 构建产物冒烟（built client.js + cordis Context 驱�
 默认从 registry 解析依赖。若要针对本地 checkout（如 `0.1.0-rc.5`）调试：
 
 ```sh
-pnpm link:checkout            # = node scripts/link-local-checkout.mjs [checkout 路径]
+pnpm link:checkout -- <deepseek-harness checkout 路径>
 pnpm install
 ```
 
-该脚本在 `pnpm-workspace.yaml` 中生成（或覆盖）`overrides` 块，把 `@deepseek-ai/*`
-以 `link:` 固定到 checkout；删除该块即回落到 registry 版本。仓库不提交 lockfile，
-所以本机链接不会污染他人安装。
+该脚本只在本机的 `pnpm-workspace.yaml` 中生成（或覆盖）`overrides` 块，把
+`@deepseek-ai/*` 以 `link:` 固定到 checkout；该文件中的本机 overrides 不应提交。
+执行 `pnpm unlink:checkout` 可删除该块并回落到 registry 版本。仓库不提交 lockfile，所以本机链接不会污染他人安装。
 
 ## 发布（GitHub + npm）
 
@@ -53,28 +53,22 @@ pnpm install
 **前置**：目标机为 DeepSeek Harness（Web 界面）部署，版本 ≥ 0.1.0-rc.5 系。
 
 ```sh
-# 在目标 profile 目录（如 C:\Users\<user>\.dsh\profiles\web）：
-pnpm add @ohoyo/dsh-file-mention
-```
-
-然后在 profile 的 `package.json` 中确认/添加：
-
-```jsonc
-{
-  "dependencies": {
-    "@ohoyo/dsh-file-mention": "^0.1.0"
-  },
-  "dsh": {
-    "profile": {
-      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@ohoyo/dsh-file-mention"]
-    }
-  }
-}
+# 由 dsh CLI 初始化/维护 profile manifest，并安装 bundle：
+dsh plugin --profile web add @ohoyo/dsh-file-mention
 ```
 
 重启 `dsh web`（进程重启后组合重新装配），刷新页面即可。
 
-**不发布 npm 的替代**（git 安装）：clone 本仓库后，把三个包以本地路径加入 profile：
+**本地 checkout 调试**：这是源码工作流，不是免构建的 GitHub 安装。先构建，再把三个已构建包以本地路径加入 profile：
+
+```sh
+git clone <仓库> dsh-file-mention
+cd dsh-file-mention
+pnpm install
+pnpm build
+```
+
+在 profile 的 `package.json` 中添加本地依赖，并由 `dsh.profile.bundles` 列出 bundle：
 
 ```jsonc
 {
@@ -86,7 +80,9 @@ pnpm add @ohoyo/dsh-file-mention
 }
 ```
 
-其余步骤相同（`dsh.profile.bundles` 追加 + `pnpm install` + 重启）。
+然后在 profile 目录执行 `pnpm install`，重启 `dsh web`。
+
+源码安装依赖构建产物；如果希望不执行构建，使用 npm 发布包或 `pnpm pack` 生成的 tarball。
 
 ## 验证清单（对应 handoff Prompt 4）
 
