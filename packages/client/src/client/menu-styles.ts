@@ -13,13 +13,13 @@
  * listbox rendered inside the composer card, and the card attribute is a
  * stable product hook (the menu's own dismiss logic climbs it).
  *
- * Injection: this module runs at bundle materialization, so the untagged
- * `<style>` element is claimed by the client module system (system.ts
- * `claimStyles`) and removed when the plugin unloads.
+ * Injection: the plugin installs this sheet during `apply` and removes the
+ * exact owned element from its disposer. This keeps module evaluation pure
+ * and avoids leaking a global style when the plugin is unloaded normally.
  */
 
 export const MENU_ALIGN_CSS = `
-[data-composer-card] [role="listbox"] {
+[data-composer-card] [role="listbox"]:has([data-source="file"]) {
   width: 100% !important;
   min-width: 100% !important;
   max-width: 100% !important;
@@ -27,8 +27,11 @@ export const MENU_ALIGN_CSS = `
 }
 `
 
-if (typeof document !== 'undefined') {
+export function installMenuStyles(): () => void {
+  if (typeof document === 'undefined') return () => {}
   const tag = document.createElement('style')
+  tag.setAttribute('data-file-mention-style', '')
   tag.textContent = MENU_ALIGN_CSS
   document.head.appendChild(tag)
+  return () => { tag.remove() }
 }

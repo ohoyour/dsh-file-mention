@@ -25,9 +25,9 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
 import type { IndexResultWire, IndexRowWire } from './remote.ts'
-import './menu-styles.ts'
+import { installMenuStyles } from './menu-styles.ts'
 import {
-  buildMentionCounts, mentionName, mentionToken, rankRows, uniqueCandidates,
+  buildMentionCounts, isMentionName, mentionName, mentionToken, rankRows, uniqueCandidates,
 } from './rank.ts'
 
 export const name = 'file-mention'
@@ -61,6 +61,9 @@ interface MentionRoll {
   readonly names: readonly string[]
 }
 
+/** Bound browser memory when one page visits many sessions. */
+const MAX_SESSION_CACHE_ENTRIES = 64
+
 /**
  * Client plugin body: mount the `fileIndex` Remote namespace, then register
  * the `@` source. Async apply + returned disposer is the api-remotes pattern.
@@ -70,6 +73,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const inputTriggers = ctx.get('inputTriggers') as InputTriggerServiceContract
   const fileIndex = ctx.get('remote.fileIndex') as FileIndexNamespace | undefined
   if (fileIndex === undefined) {
+    await disposeRemote()
     throw new Error('file-mention: remote.fileIndex namespace did not mount')
   }
 
@@ -80,6 +84,34 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const rolls = new Map<string, MentionRoll>()
   /** Per-session lexicon invalidation listeners (subscribeLexicon consumers). */
   const lexiconListeners = new Map<string, Set<() => void>>()
+
+  const dropSession = (sessionId: string): void => {
+    entries.delete(sessionId)
+    picks.delete(sessionId)
+    rolls.delete(sessionId)
+    if (!lexiconListeners.has(sessionId)) lexiconListeners.delete(sessionId)
+  }
+
+  const touchSession = (sessionId: string): void => {
+    const entry = entries.get(sessionId)
+    if (entry === undefined) return
+    entries.delete(sessionId)
+    entries.set(sessionId, entry)
+  }
+
+  const pruneSessions = (protectedSessionId: string): void => {
+    while (entries.size > MAX_SESSION_CACHE_ENTRIES) {
+      let removed = false
+      for (const [sessionId, entry] of entries) {
+        if (sessionId === protectedSessionId || entry.settledAt === undefined) continue
+        if (lexiconListeners.has(sessionId)) continue
+        dropSession(sessionId)
+        removed = true
+        break
+      }
+      if (!removed) break
+    }
+  }
 
   const notifyLexicon = (sessionId: string): void => {
     for (const listener of [...(lexiconListeners.get(sessionId) ?? [])]) {
@@ -100,6 +132,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const ensureIndex = (sessionId: string): Promise<readonly IndexRowWire[]> => {
     const existing = entries.get(sessionId)
     if (existing !== undefined) {
+      touchSession(sessionId)
       if (existing.rows !== undefined && Date.now() - (existing.settledAt ?? 0) < (existing.ttlMs ?? 0)) {
         return Promise.resolve(existing.rows)
       }
@@ -116,19 +149,25 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       }
       const rows = answered.value.files
       const counts = buildMentionCounts(rows)
+      const mentionableRows = rows.filter(row => isMentionName(mentionName(row, counts)))
       const current = entries.get(sessionId)
       if (current === entry) {
         current.rows = rows
         current.settledAt = Date.now()
         current.ttlMs = answered.value.cacheTtlMs
-        rolls.set(sessionId, { counts, names: rows.map(row => mentionName(row, counts)) })
+        rolls.set(sessionId, {
+          counts,
+          names: mentionableRows.map(row => mentionName(row, counts)),
+        })
+        touchSession(sessionId)
+        pruneSessions(sessionId)
       }
       notifyLexicon(sessionId)
       return rows
     })()
     entries.set(sessionId, entry)
     entry.promise.catch((error: unknown) => {
-      if (entries.get(sessionId) === entry) entries.delete(sessionId)
+      if (entries.get(sessionId) === entry) dropSession(sessionId)
       notifyLexicon(sessionId)
       console.error('[file-mention] index fetch failed:', error)
     })
@@ -148,7 +187,11 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         const rows = await ensureIndex(session.sessionId)
         // Superseded keystroke: the shared fetch stays warm, this caller yields.
         if (signal.aborted) return []
-        const ranked = rankRows(rows, query, 20)
+        const roll = rolls.get(session.sessionId)
+        const mentionableRows = roll === undefined
+          ? []
+          : rows.filter(row => isMentionName(mentionName(row, roll.counts)))
+        const ranked = rankRows(mentionableRows, query, 20)
         const unique = uniqueCandidates(ranked)
         picks.set(session.sessionId, new Map(unique.map(item => [item.name, item.row])))
         return unique.map(({ name: itemName, description, icon }) => ({
@@ -194,8 +237,10 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   }
 
   const unregister = inputTriggers.registerSource(source)
+  const disposeMenuStyles = installMenuStyles()
   return async () => {
     unregister()
+    disposeMenuStyles()
     picks.clear()
     entries.clear()
     rolls.clear()

@@ -3,7 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { apply, inject, name } from '../src/client/index.ts'
-import { MENU_ALIGN_CSS } from '../src/client/menu-styles.ts'
+import { installMenuStyles, MENU_ALIGN_CSS } from '../src/client/menu-styles.ts'
 
 const FIXTURE = [
   { type: 'directory', path: 'warning-disposal-report', name: 'warning-disposal-report', dir: '' },
@@ -29,11 +29,30 @@ const PICK = (candidateName: string) => ({
 
 describe('menu alignment stylesheet', () => {
   it('forces the candidate menu to the composer card width', () => {
-    expect(MENU_ALIGN_CSS).toContain('[data-composer-card] [role="listbox"]')
+    expect(MENU_ALIGN_CSS).toContain('[data-composer-card] [role="listbox"]:has([data-source="file"])')
     expect(MENU_ALIGN_CSS).toContain('width: 100% !important')
     expect(MENU_ALIGN_CSS).toContain('min-width: 100% !important')
     expect(MENU_ALIGN_CSS).toContain('max-width: 100% !important')
     expect(MENU_ALIGN_CSS).toContain('box-sizing: border-box')
+  })
+
+  it('removes the exact style element installed by the plugin', () => {
+    const remove = vi.fn()
+    const appendChild = vi.fn()
+    const tag = { setAttribute: vi.fn(), textContent: '', remove }
+    vi.stubGlobal('document', {
+      createElement: vi.fn(() => tag),
+      head: { appendChild },
+    })
+    try {
+      const dispose = installMenuStyles()
+      expect(appendChild).toHaveBeenCalledWith(tag)
+      expect(tag.setAttribute).toHaveBeenCalledWith('data-file-mention-style', '')
+      dispose()
+      expect(remove).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 
@@ -56,15 +75,7 @@ async function setup(list: unknown) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   root.provide('remote', remote as any)
   // The mounted namespace is a separate service read via ctx.get.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const listWithCacheTtl = async (...args: unknown[]) => {
-    const response = await (list as (...args: unknown[]) => Promise<any>)(...args)
-    if (response.ok && response.value.cacheTtlMs === undefined) {
-      return { ...response, value: { ...response.value, cacheTtlMs: 10_000 } }
-    }
-    return response
-  }
-  root.provide('remote.fileIndex', { list: listWithCacheTtl } as any)
+  root.provide('remote.fileIndex', { list } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   root.provide('inputTriggers', inputTriggers as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -76,7 +87,7 @@ async function setup(list: unknown) {
 
 describe('file-mention client source', () => {
   it('mounts the fileIndex contribution and registers the @ source', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
     const { source, mounted } = await setup(list)
     expect(source).toMatchObject({ trigger: '@', name: 'file', order: -1 })
     expect(mounted).toHaveLength(1)
@@ -89,7 +100,7 @@ describe('file-mention client source', () => {
     const list = vi.fn(async (sessionId: string, request: { query?: string }) => {
       expect(sessionId).toBe('s1')
       expect(request).toEqual({ query: '' })
-      return { ok: true as const, value: { files: FIXTURE } }
+      return { ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }
     })
     const { source } = await setup(list)
 
@@ -109,7 +120,7 @@ describe('file-mention client source', () => {
   })
 
   it('disambiguates clashing basenames', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     const candidates = await source.candidates(SESSION, REQ('readme'))
     expect(candidates.map(candidate => candidate.name)).toEqual([
@@ -118,8 +129,19 @@ describe('file-mention client source', () => {
     ])
   })
 
+  it('does not offer paths whose mention token cannot be scanned as a chip', async () => {
+    const invalid = { type: 'file' as const, path: 'docs/bad name.txt', name: 'bad name.txt', dir: 'docs' }
+    const list = vi.fn(async () => ({
+      ok: true as const,
+      value: { files: [...FIXTURE, invalid], cacheTtlMs: 10_000 },
+    }))
+    const { source } = await setup(list)
+    expect(await source.candidates(SESSION, REQ('bad'))).toEqual([])
+    expect(source.lexicon?.(SESSION)).not.toContain('docs-bad name-txt')
+  })
+
   it('picks insert the full chip-compatible flattened @ token', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     await source.candidates(SESSION, REQ('index'))
     expect(source.onPick(PICK('index.vue'))).toEqual({ text: '@warning-disposal-report-index-vue ' })
@@ -129,7 +151,7 @@ describe('file-mention client source', () => {
   })
 
   it('exposes the flattened mention lexicon and notifies subscribers on settle', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     // Cold: no settled cache yet → no roll.
     expect(source.lexicon?.(SESSION)).toBeUndefined()
@@ -151,7 +173,7 @@ describe('file-mention client source', () => {
   })
 
   it('returns undefined for a pick with no backing row', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     expect(source.onPick(PICK('unknown.ts'))).toBeUndefined()
   })
@@ -172,7 +194,7 @@ describe('file-mention client source', () => {
   })
 
   it('yields [] for an aborted keystroke', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     const aborted = new AbortController()
     aborted.abort()
@@ -185,10 +207,18 @@ describe('file-mention client source', () => {
   })
 
   it('prewarms through the warm hook', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     source.warm?.(SESSION)
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('honors the host-provided cache TTL', async () => {
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 0 } }))
+    const { source } = await setup(list)
+    await source.candidates(SESSION, REQ('warning'))
+    await source.candidates(SESSION, REQ('warning'))
+    expect(list).toHaveBeenCalledTimes(2)
   })
 })

@@ -19,7 +19,7 @@ inserts both composition rows:
   `/plugins/@ohoyo/dsh-client-ui-file-mention/client.js`.
 
 The bundle declares both packages as `workspace:^` dependencies (rewritten to
-concrete `^` versions by `pnpm publish`) and ships no compiled entry of its own —
+concrete `^` versions by `pnpm publish` and `pnpm pack`) and ships no compiled entry of its own —
 `lib/index.js` exists only so the package exports `"."` for tooling.
 
 To tune the Host limits in a profile, override the inserted row in that

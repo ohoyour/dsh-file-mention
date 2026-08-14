@@ -24,7 +24,9 @@ export default defineConfig([
     target: 'es2024',
     dts: false,
     clean: false,
-    external: [/^@deepseek-ai\//],
+    deps: {
+      neverBundle: [/^@deepseek-ai\//],
+    },
     outputOptions: {
       entryFileNames: 'index.js',
     },
@@ -39,7 +41,10 @@ export default defineConfig([
     dts: false,
     clean: false,
     sourcemap: true,
-    noExternal: () => true,
+    deps: {
+      alwaysBundle: () => true,
+      onlyBundle: false,
+    },
     define: {
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
       'import.meta.env.MODE': JSON.stringify(process.env.NODE_ENV ?? 'production'),

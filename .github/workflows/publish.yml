@@ -18,11 +18,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: pnpm
           registry-url: 'https://registry.npmjs.org'
       - name: Install
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: Verify release version
+        run: pnpm release:check "${GITHUB_REF_NAME}"
       - name: Build
         run: pnpm build
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test
+        run: pnpm test
+      - name: Smoke
+        run: pnpm smoke
+      - name: Pack validation
+        run: pnpm pack:local
       - name: Publish
         run: pnpm -r publish --no-git-checks
         env:

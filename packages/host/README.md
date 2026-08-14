@@ -11,7 +11,8 @@ Typert namespace `fileIndex`, method `@Remote('list') list(agent, request)`:
 - BFS-walks the session workspace (`agent.session.header.cwd`), indexing **files and
   directories** with `{ type, path, name, dir }` rows (relative, forward slashes).
 - Skips noise dirs (`node_modules`, `.git`, `dist`, …), capped at 5000 rows / depth 14.
-- Cached per cwd (default TTL 15 s; configurable) with single-flight in-flight dedupe.
+- Cached per cwd (default TTL 15 s; configurable) with single-flight in-flight dedupe;
+  the cache keeps at most 32 cwd indexes (`indexCacheEntries`).
 - `query: ''` returns the whole index (the client filters locally per keystroke);
   otherwise the shared ranking rules apply (base === query > base.startsWith >
   path.startsWith > path.includes, then path length, top 20).
@@ -53,7 +54,7 @@ caches use one policy.
 pnpm build && pnpm test
 ```
 
-Tests (vitest, 32 cases) cover the index (files + dirs, noise skipping, ranking),
+Tests (vitest, 34 cases) cover the index (files + dirs, noise skipping, ranking),
 the injection paths (`` `short/` ``, `` `short` ``, `@path`, suffix matching, dedupe,
 5-ref cap, dynamic-id skip, reject/abort passthrough), and a real event-bus
 integration that mounts the plugin as a class plugin and drives the scoped

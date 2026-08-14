@@ -39,9 +39,10 @@ modules node half scans into `window.__DSH_BOOT__` and serves as
 pnpm build && pnpm test
 ```
 
-Tests (vitest, 17 cases) cover contribution mounting, single-flight caching,
+Tests (vitest, 21 cases) cover contribution mounting, single-flight caching,
 local filtering, basename disambiguation, short-form picks (file/directory),
-failure containment, aborted keystrokes, and the warm hook.
+failure containment, aborted keystrokes, TTL expiry, unsupported path names,
+style cleanup, and the warm hook.
 
 ## License
 

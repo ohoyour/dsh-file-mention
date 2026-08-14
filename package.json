@@ -9,6 +9,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "smoke": "node scripts/smoke-client-bundle.mjs",
+    "pack:local": "node scripts/pack-local.mjs",
+    "release:check": "node scripts/check-release.mjs",
     "link:checkout": "node scripts/link-local-checkout.mjs",
     "unlink:checkout": "node scripts/unlink-local-checkout.mjs"
   },

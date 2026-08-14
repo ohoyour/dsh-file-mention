@@ -16,7 +16,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - name: Install
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
       - name: Typecheck
@@ -25,3 +25,5 @@ jobs:
         run: pnpm test
       - name: Smoke (built client bundle)
         run: pnpm smoke
+      - name: Pack local tarballs
+        run: pnpm pack:local

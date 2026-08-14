@@ -2,8 +2,9 @@ node_modules/
 coverage/
 *.tsbuildinfo
 # Regenerated per machine: local-checkout linkage rewrites dependency
-# resolution, so a committed lockfile would carry machine-specific paths.
-pnpm-lock.yaml
+# resolution. The default registry lockfile is committed; local linkage may
+# update it temporarily and should be restored with `pnpm unlink:checkout`.
+.local-pack/
 
 # Built artifacts (the bundle package keeps a hand-written lib/index.js —
 # re-include it below).

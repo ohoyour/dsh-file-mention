@@ -105,6 +105,11 @@ function fakeFs(files: Record<string, string>, sizes: Record<string, SizeOverrid
         yield value
       })()
     },
+    contains(parent: { targetKey: string }, child: { targetKey: string }) {
+      const root = parent.targetKey.replace(/\/+$/, '')
+      const target = child.targetKey.replace(/\/+$/, '')
+      return target === root || target.startsWith(`${root}/`)
+    },
     processPath(target: { targetKey: string }) {
       return target.targetKey
     },
@@ -178,6 +183,23 @@ describe('FileIndexService.list', () => {
     const { service, agent } = setup()
     const noCwd = { ...agent, session: { header: {}, events: [] } } as unknown as Agent
     await expect(service.list(noCwd, { query: '' })).resolves.toEqual({ files: [], cacheTtlMs: 15_000 })
+  })
+
+  it('does not inject an absolute path outside the workspace', async () => {
+    const root = new Context()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.provide('fs', fakeFs({ ...TREE, '/outside/secret.txt': 'private' }) as any)
+    const service = new FileIndexService(root)
+    const agent = makeAgent(CWD)
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'read @/outside/secret.txt' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 2, step: 1, signal: signal() },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    expect(injectedTexts(decision)).toHaveLength(0)
   })
 })
 
@@ -321,6 +343,28 @@ describe('FileIndexService pre-step injection', () => {
     )
     expect(decision.kind).toBe('enter')
     expect(decision.kind === 'enter' && decision.messages).toHaveLength(1)
+  })
+
+  it('does not append a reference when cancellation happens during the read', async () => {
+    const root = new Context()
+    const aborted = new AbortController()
+    const fs = fakeFs(TREE) as any
+    fs.readText = async (target: { targetKey: string }) => {
+      aborted.abort()
+      return TREE[target.targetKey]
+    }
+    root.provide('fs', fs)
+    const service = new FileIndexService(root)
+    const agent = makeAgent(CWD)
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'read `docs/a.md`' }],
+      source: { kind: 'user' },
+    })
+    const decision = await service.handlePreStep(
+      { agent, messages: [user], turn: 15, step: 1, signal: aborted.signal },
+      async () => ({ kind: 'enter', messages: [user] }),
+    )
+    expect(injectedTexts(decision)).toHaveLength(0)
   })
 
   it('marks injected messages with the plugin source', async () => {

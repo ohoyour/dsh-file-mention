@@ -98,6 +98,11 @@ export function flattenPath(path: string): string {
   return path.replace(/[/.]/g, '-')
 }
 
+/** Whether a flattened mention name is accepted by the built-in chip scanner. */
+export function isMentionName(name: string): boolean {
+  return /^[\w-]+$/.test(name)
+}
+
 /** Every flattened suffix token of a path (last 1..n segments). */
 export function suffixFlattenTokens(path: string): string[] {
   const segments = path.split('/')

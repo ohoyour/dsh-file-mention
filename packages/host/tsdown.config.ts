@@ -23,5 +23,7 @@ export default defineConfig({
   },
   // Keep every @deepseek-ai dependency external: they resolve from the
   // deployment's own module tree at load time, matching its exact versions.
-  external: [/^@deepseek-ai\//],
+  deps: {
+    neverBundle: [/^@deepseek-ai\//],
+  },
 })

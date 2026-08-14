@@ -17,11 +17,12 @@ DeepSeek Harness 的 **@file / @dir 提及插件**（功能对齐 Codex CLI 的 
 ## 开发
 
 ```sh
-pnpm install        # 从 npm registry 解析 @deepseek-ai/dsh-*（rc.6 系）
+pnpm install --frozen-lockfile  # 从 lockfile 安装 registry 依赖
 pnpm build          # tsdown 构建 lib/（host/client 含类型声明；client.js 为浏览器 factory bundle）
 pnpm typecheck      # tsc --noEmit
-pnpm test           # vitest / node:test（host 32 用例、client 17 用例、bundle 2 用例）
+pnpm test           # vitest / node:test（host 34 用例、client 21 用例、bundle 2 用例）
 pnpm smoke          # 构建产物冒烟（built client.js + cordis Context 驱动）
+pnpm pack:local     # 生成可在仓库外 profile 安装的三个 tarball
 ```
 
 ### 可选：链接本地 deepseek-harness checkout
@@ -35,14 +36,15 @@ pnpm install
 
 该脚本只在本机的 `pnpm-workspace.yaml` 中生成（或覆盖）`overrides` 块，把
 `@deepseek-ai/*` 以 `link:` 固定到 checkout；该文件中的本机 overrides 不应提交。
-执行 `pnpm unlink:checkout` 可删除该块并回落到 registry 版本。仓库不提交 lockfile，所以本机链接不会污染他人安装。
+执行 `pnpm unlink:checkout` 可删除该块并回落到 registry 版本。默认 registry lockfile 已提交；本机链接后
+lockfile 可能暂时出现本机路径，解除链接并重新安装即可恢复。
 
 ## 发布（GitHub + npm）
 
 1. 把仓库推到 GitHub（例如 `github.com/<you>/dsh-file-mention`）。
 2. 在仓库 Settings → Secrets and variables → Actions 添加 `NPM_TOKEN`（npmjs.org 的 automation token）。
 3. 推送版本标签触发发布：`git tag v0.1.0 && git push origin v0.1.0`。
-   - `.github/workflows/publish.yml` 会 build 后按依赖序发布三包（host → client → bundle；bundle 的 `workspace:^` 自动改写为具体版本），发布到 `https://registry.npmjs.org`（见各包 `publishConfig.registry`）。
+   - 三个 package 的版本必须与 tag 一致；`.github/workflows/publish.yml` 会 frozen install、类型检查、测试、冒烟和打包校验后，按依赖序发布三包（host → client → bundle；bundle 的 `workspace:^` 自动改写为具体版本），发布到 `https://registry.npmjs.org`（见各包 `publishConfig.registry`）。
    - 每次 push / PR 会跑 `.github/workflows/ci.yml`（build + typecheck + test + smoke）。
 4. 发布后即可按下方“使用者安装”步骤安装。
 
@@ -59,13 +61,15 @@ dsh plugin --profile web add @ohoyo/dsh-file-mention
 
 重启 `dsh web`（进程重启后组合重新装配），刷新页面即可。
 
-**本地 checkout 调试**：这是源码工作流，不是免构建的 GitHub 安装。先构建，再把三个已构建包以本地路径加入 profile：
+**本地 checkout 调试**：这是源码工作流，不是免构建的 GitHub 安装。先构建并打包；`pnpm pack:local`
+会将 bundle 的 `workspace:^` 依赖改写为可在仓库外解析的具体版本，并生成三个 tarball：
 
 ```sh
 git clone <仓库> dsh-file-mention
 cd dsh-file-mention
 pnpm install
 pnpm build
+pnpm pack:local
 ```
 
 在 profile 的 `package.json` 中添加本地依赖，并由 `dsh.profile.bundles` 列出 bundle：
@@ -73,9 +77,9 @@ pnpm build
 ```jsonc
 {
   "dependencies": {
-    "@ohoyo/dsh-file-mention": "link:<仓库>/packages/bundle",
-    "@ohoyo/dsh-file-mention-host": "link:<仓库>/packages/host",
-    "@ohoyo/dsh-client-ui-file-mention": "link:<仓库>/packages/client"
+    "@ohoyo/dsh-file-mention": "file:<仓库>/.local-pack/ohoyo-dsh-file-mention-0.1.0.tgz",
+    "@ohoyo/dsh-file-mention-host": "file:<仓库>/.local-pack/ohoyo-dsh-file-mention-host-0.1.0.tgz",
+    "@ohoyo/dsh-client-ui-file-mention": "file:<仓库>/.local-pack/ohoyo-dsh-client-ui-file-mention-0.1.0.tgz"
   }
 }
 ```
@@ -98,7 +102,7 @@ pnpm build
 
 ## 已知限制
 
-- 路径含空格的引用不支持（token 以空白分隔）。
+- 路径含空格的引用不支持（token 以空白分隔）；这类路径也不会出现在候选菜单或 lexicon 中。
 - 提及 token 为折叠形态（`/`、`.` → `-`），取最短无歧义后缀（文件取父目录段+名字、目录取名字，冲突时向上补段）；完整可见、不被截断（见开头说明）。
 - 两个不同路径折叠为同一 token 时（如 `a/b.md` 与 `a-b.md`）无法区分：匹配 >1 则跳过注入（防误注入）。
 - 形如 `abc-123` 的 token 按动态插件 id 规则跳过，因此折叠后恰好形如 `<3-6字母>-<数字>` 的路径无法被提及（罕见）。
@@ -107,7 +111,7 @@ pnpm build
 - 索引跳过 `node_modules`/`.git`/`dist` 等目录；上限 5000 条（文件+目录）。
 - @dir 快照有预算：树深 3 / 200 行；仅 ≤32KB 的文本文件附内容（前 24,000 字符，最多 8 个）；二进制文件跳过。
 - 每回合最多注入 5 个引用，同回合按路径去重。
-- 候选菜单默认钳制在 `min(260px,100%)` / `max(537px,100%)`（内置 MenuView 设计）；本插件注入 CSS 将菜单宽度强制为输入卡片宽度（`[data-composer-card] [role="listbox"] { width:100% }`，随插件卸载自动移除）。
+- 候选菜单默认钳制在 `min(260px,100%)` / `max(537px,100%)`（内置 MenuView 设计）；本插件仅对包含 `file` 分组的菜单注入 CSS，将宽度强制为输入卡片宽度（随插件卸载自动移除）。
 
 ## License
 

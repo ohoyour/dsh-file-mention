@@ -20,7 +20,7 @@
  * `@deepseek-ai/dsh-message-feedback`.
  */
 
-import { isAbsolute, relative as relativePath } from 'node:path'
+import { isAbsolute, normalize as normalizePath, relative as relativePath } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
@@ -62,6 +62,8 @@ export interface Config {
   indexLimit: number
   /** Maximum directory traversal depth for the workspace index. */
   indexDepth: number
+  /** Maximum number of distinct workspace indexes retained in memory. */
+  indexCacheEntries: number
   /** Workspace index cache lifetime, in milliseconds. */
   indexTtlMs: number
   /** Maximum file size read through readText before streaming/truncation. */
@@ -120,6 +122,7 @@ const DEFAULT_NOISE_DIRS = [
 
 const DEFAULT_INDEX_LIMIT = 5000
 const DEFAULT_INDEX_DEPTH = 14
+const DEFAULT_INDEX_CACHE_ENTRIES = 32
 const DEFAULT_INDEX_TTL_MS = 15_000
 
 /** @file: whole-file read threshold; above (or unknown) stream-truncate. */
@@ -141,6 +144,7 @@ const DEFAULT_CONFIG: Config = {
   noiseDirs: DEFAULT_NOISE_DIRS,
   indexLimit: DEFAULT_INDEX_LIMIT,
   indexDepth: DEFAULT_INDEX_DEPTH,
+  indexCacheEntries: DEFAULT_INDEX_CACHE_ENTRIES,
   indexTtlMs: DEFAULT_INDEX_TTL_MS,
   fileSafeSizeBytes: DEFAULT_FILE_SAFE_SIZE_BYTES,
   fileTextLimit: DEFAULT_FILE_TEXT_LIMIT,
@@ -161,6 +165,7 @@ export const Config: Schema<Config> = Schema.object({
   noiseDirs: Schema.array(Schema.string()).default([...DEFAULT_NOISE_DIRS]),
   indexLimit: positiveInteger().default(DEFAULT_INDEX_LIMIT),
   indexDepth: natural().default(DEFAULT_INDEX_DEPTH),
+  indexCacheEntries: positiveInteger().default(DEFAULT_INDEX_CACHE_ENTRIES),
   indexTtlMs: positiveInteger().default(DEFAULT_INDEX_TTL_MS),
   fileSafeSizeBytes: natural().default(DEFAULT_FILE_SAFE_SIZE_BYTES),
   fileTextLimit: natural().default(DEFAULT_FILE_TEXT_LIMIT),
@@ -245,7 +250,7 @@ function suffixFlattenTokens(path: string): string[] {
 /** Workspace-relative display path for a directly-resolved token. */
 function relFor(cwd: string, token: string): string {
   const value = isAbsolute(token) ? relativePath(cwd, token) : token
-  const rel = value.replace(/\\/g, '/').replace(/^\.\//, '')
+  const rel = normalizePath(value).replace(/\\/g, '/').replace(/^\.\//, '')
   return rel.replace(/\/+$/, '')
 }
 
@@ -309,12 +314,19 @@ export default class FileIndexService extends TypertRemoteService {
   private ensureIndexByCwd(cwd: string): Promise<IndexRow[]> {
     const cached = this.indexCache.get(cwd)
     if (cached !== undefined && Date.now() - cached.at < this.config.indexTtlMs) {
+      this.indexCache.delete(cwd)
+      this.indexCache.set(cwd, cached)
       return Promise.resolve(cached.rows)
     }
     const flight = this.indexFlights.get(cwd)
     if (flight !== undefined) return flight
     const build = this.buildIndex(cwd).then((rows) => {
       this.indexCache.set(cwd, { rows, at: Date.now() })
+      while (this.indexCache.size > this.config.indexCacheEntries) {
+        const oldest = this.indexCache.keys().next().value
+        if (oldest === undefined) break
+        this.indexCache.delete(oldest)
+      }
       return rows
     }, (error: unknown) => {
       this.warn(`failed to build workspace index for "${cwd}"`, error)
@@ -336,8 +348,9 @@ export default class FileIndexService extends TypertRemoteService {
     const queue: Array<{ target: FsTarget; rel: string; depth: number }> = [
       { target: root, rel: '', depth: 0 },
     ]
-    while (queue.length > 0 && rows.length < this.config.indexLimit) {
-      const { target, rel, depth } = queue.shift()!
+    let head = 0
+    while (head < queue.length && rows.length < this.config.indexLimit) {
+      const { target, rel, depth } = queue[head++]!
       let entries: FsDirEntry[]
       try {
         entries = await this.ctx.fs.listDir(target)
@@ -347,6 +360,10 @@ export default class FileIndexService extends TypertRemoteService {
       }
       for (const entry of entries) {
         if (rows.length >= this.config.indexLimit) break
+        if (!this.ctx.fs.contains(root, entry.target)) {
+          this.warn(`skipping workspace entry outside root: "${entry.name}"`, 'outside workspace')
+          continue
+        }
         const path = rel === '' ? entry.name : `${rel}/${entry.name}`
         if (entry.type === 'directory') {
           if (this.noiseDirs.has(entry.name)) continue
@@ -375,7 +392,7 @@ export default class FileIndexService extends TypertRemoteService {
       const injected = await this.collectInjected(
         payload.agent, payload.messages, payload.turn, payload.signal,
       )
-      if (injected.length === 0) return decision
+      if (payload.signal.aborted || injected.length === 0) return decision
       return { kind: 'enter', messages: [...decision.messages, ...injected] }
     } catch (error) {
       this.warn('pre-step reference injection failed', error)
@@ -403,6 +420,7 @@ export default class FileIndexService extends TypertRemoteService {
           try {
             hits = await this.resolveRefs(cwd, token, signal)
           } catch (error) {
+            if (signal.aborted) return injected
             this.warn(`failed to resolve reference "${token}"`, error)
             continue
           }
@@ -410,6 +428,7 @@ export default class FileIndexService extends TypertRemoteService {
             if (signal.aborted || state.count >= this.config.maxRefsPerTurn) return injected
             if (state.paths.has(hit.path)) continue
             const built = await this.buildRefMessage(hit, cwd, signal)
+            if (signal.aborted) return injected
             if (built === undefined) continue
             state.paths.add(hit.path)
             injected.push(built)
@@ -432,7 +451,9 @@ export default class FileIndexService extends TypertRemoteService {
     const dirIntent = token.endsWith('/')
     // 1) direct resolution
     try {
+      const root = await this.ctx.fs.resolve(cwd, { signal })
       const target = await this.ctx.fs.resolve(token, { cwd, signal })
+      if (!this.ctx.fs.contains(root, target)) return []
       const info = await this.ctx.fs.stat(target, signal)
       if (info !== undefined && (info.type === 'file' || info.type === 'directory')) {
         if (dirIntent && info.type !== 'directory') return []
@@ -442,8 +463,10 @@ export default class FileIndexService extends TypertRemoteService {
     } catch {
       // fall through to index suffix matching
     }
+    if (signal.aborted) return []
     // 2) index suffix matching
     const rows = await this.ensureIndexByCwd(cwd)
+    if (signal.aborted) return []
     const dirRows = rows.filter(row => row.type === 'directory'
       && (row.path === norm || row.path.endsWith(`/${norm}`)))
     if (dirIntent) {
@@ -490,6 +513,7 @@ export default class FileIndexService extends TypertRemoteService {
         },
       })
     } catch (error) {
+      if (signal.aborted) return undefined
       this.warn(`failed to read referenced ${hit.kind} "${hit.path}"`, error)
       return undefined
     }
@@ -497,6 +521,7 @@ export default class FileIndexService extends TypertRemoteService {
 
   private async buildFileText(hit: RefHit, cwd: string, signal: AbortSignal): Promise<string | undefined> {
     const target = hit.target ?? await this.ctx.fs.resolve(hit.path, { cwd, signal })
+    if (!(await this.isInsideWorkspace(cwd, target, signal))) return undefined
     const info = await this.ctx.fs.stat(target, signal)
     if (info === undefined || info.type !== 'file') return undefined
     const read = await this.readFileText(target, info, signal)
@@ -522,6 +547,8 @@ export default class FileIndexService extends TypertRemoteService {
    */
   private async buildDirText(hit: RefHit, cwd: string, signal: AbortSignal): Promise<string | undefined> {
     const target = hit.target ?? await this.ctx.fs.resolve(hit.path, { cwd, signal })
+    const root = await this.ctx.fs.resolve(cwd, { signal })
+    if (!this.ctx.fs.contains(root, target)) return undefined
     const info = await this.ctx.fs.stat(target, signal)
     if (info === undefined || info.type !== 'directory') return undefined
 
@@ -532,19 +559,23 @@ export default class FileIndexService extends TypertRemoteService {
     const queue: Array<{ target: FsTarget; rel: string; depth: number }> = [
       { target, rel: hit.path, depth: 0 },
     ]
-    while (queue.length > 0 && treeLines.length < this.config.dirTreeLines) {
-      const current = queue.shift()!
+    let head = 0
+    while (head < queue.length && treeLines.length < this.config.dirTreeLines) {
+      if (signal.aborted) return undefined
+      const current = queue[head++]!
       if (current.depth >= this.config.dirTreeDepth) continue
       let entries: FsDirEntry[]
       try {
         entries = await this.ctx.fs.listDir(current.target, signal)
       } catch (error) {
+        if (signal.aborted) return undefined
         this.warn(`failed to list directory "${current.rel}" for dir context`, error)
         continue
       }
       const dirs = entries.filter(entry => entry.type === 'directory' && !this.noiseDirs.has(entry.name))
       const files = entries.filter(entry => entry.type === 'file')
       for (const entry of [...dirs, ...files]) {
+        if (!this.ctx.fs.contains(root, entry.target)) continue
         if (treeLines.length >= this.config.dirTreeLines) break
         const rel = `${current.rel}/${entry.name}`
         if (entry.type === 'directory') {
@@ -562,17 +593,20 @@ export default class FileIndexService extends TypertRemoteService {
     // File contents: ≤32 KB text files, binary-sniffed, ≤8 files.
     const sections: Array<{ rel: string; read: BoundedText }> = []
     for (const candidate of contentCandidates) {
+      if (signal.aborted) return undefined
       if (sections.length >= this.config.dirFileCount) break
       if (candidate.size !== undefined && candidate.size > this.config.dirFileSizeBytes) continue
       let text: string
       try {
         text = await this.ctx.fs.readText(candidate.target, signal)
-      } catch {
+      } catch (error) {
+        if (signal.aborted) return undefined
         continue
       }
       if (text.slice(0, 512).includes('\0')) continue
       sections.push({ rel: candidate.rel, read: bounded(text, this.config.dirFileTextLimit) })
     }
+    if (signal.aborted) return undefined
 
     const counts = `${fileCount} files, ${dirCount} dirs; contents of ${sections.length} files included`
     const header = `The user referenced this workspace directory: ${hit.path}/ (${counts})`
@@ -600,6 +634,11 @@ export default class FileIndexService extends TypertRemoteService {
       body = `${body.slice(0, this.config.dirMessageLimit)}\n… [directory context truncated]`
     }
     return `<dir_context>\n${body}\n</dir_context>`
+  }
+
+  private async isInsideWorkspace(cwd: string, target: FsTarget, signal: AbortSignal): Promise<boolean> {
+    const root = await this.ctx.fs.resolve(cwd, { signal })
+    return this.ctx.fs.contains(root, target)
   }
 
   // ── shared state ───────────────────────────────────────────────────────────

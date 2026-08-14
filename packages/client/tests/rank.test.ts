@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  buildMentionCounts, flattenPath, mentionName, mentionToken, rankRows, rankScore, uniqueCandidates,
+  buildMentionCounts, flattenPath, isMentionName, mentionName, mentionToken, rankRows, rankScore, uniqueCandidates,
 } from '../src/client/rank.ts'
 import type { RankableRow } from '../src/client/rank.ts'
 
@@ -46,6 +46,12 @@ describe('flattenPath / mentionToken', () => {
     expect(flattenPath('warning-disposal-report/index.vue')).toBe('warning-disposal-report-index-vue')
     expect(flattenPath('src/util')).toBe('src-util')
     expect(flattenPath('docs')).toBe('docs')
+  })
+
+  it('accepts only names supported by the built-in chip scanner', () => {
+    expect(isMentionName('src-main-ts')).toBe(true)
+    expect(isMentionName('space name')).toBe(false)
+    expect(isMentionName('')).toBe(false)
   })
 
   it('files mention parent/name, directories mention their own name', () => {
