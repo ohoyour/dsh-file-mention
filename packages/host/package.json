@@ -1,0 +1,49 @@
+{
+  "name": "@ohoyo/dsh-file-mention-host",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness host plugin for @file and @directory mentions: workspace file index Remote service and pre-step reference injection.",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "types": "./lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsdown",
+    "prepare": "pnpm build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run tests"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.2"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.5",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.2",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.5",
+    "@deepseek-ai/dsh-fs": "^0.1.0-rc.5"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
+}

@@ -1,0 +1,13 @@
+node_modules/
+coverage/
+*.tsbuildinfo
+# Regenerated per machine: local-checkout linkage rewrites dependency
+# resolution. The default registry lockfile is committed; local linkage may
+# update it temporarily and should be restored with `pnpm unlink:checkout`.
+.local-pack/
+
+# Built artifacts (the bundle package keeps a hand-written lib/index.js —
+# re-include it below).
+lib/
+!packages/bundle/lib/
+!packages/bundle/lib/index.js

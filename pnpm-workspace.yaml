@@ -1,0 +1,7 @@
+# Workspace: the three @ohoyo packages under packages/.
+packages:
+  - packages/*
+
+# The DeepSeek Harness prereleases on the registry mirror can be less than a
+# day old; the supply-chain minimum-release-age policy would reject them.
+minimumReleaseAge: 0

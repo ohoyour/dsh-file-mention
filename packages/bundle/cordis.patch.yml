@@ -1,0 +1,9 @@
+# The @ohoyo/dsh-file-mention bundle patch: applied as a profile bundle layer
+# (package.json `dsh.profile.bundles`). It inserts the host plugin row
+# (fileIndex Remote service + pre-step reference injection) and the web
+# client row (the '@' file source, served via its dsh.client declaration).
+- insert:
+    - id: file-mention-host
+      name: '@ohoyo/dsh-file-mention-host'
+    - id: client-file-mention
+      name: '@ohoyo/dsh-client-ui-file-mention'

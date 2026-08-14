@@ -1,0 +1,40 @@
+name: publish
+
+# Push a tag (e.g. v0.1.0) to publish all three packages to the public npm
+# registry in dependency order (host → client → bundle; the bundle's
+# `workspace:^` dependency specifiers are rewritten to concrete versions).
+# Requires the NPM_TOKEN repository secret.
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Verify release version
+        run: pnpm release:check "${GITHUB_REF_NAME}"
+      - name: Build
+        run: pnpm build
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test
+        run: pnpm test
+      - name: Smoke
+        run: pnpm smoke
+      - name: Pack validation
+        run: pnpm pack:local
+      - name: Publish
+        run: pnpm -r publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

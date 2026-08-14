@@ -1,0 +1,41 @@
+{
+  "name": "@ohoyo/dsh-file-mention",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness profile bundle for @file/@directory mentions: the file-mention host plugin and its web client.",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node -e \"console.log('bundle has no compiled entry')\"",
+    "prepare": "node scripts/prepare.mjs",
+    "typecheck": "node -e \"console.log('bundle has no TypeScript entry')\"",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@ohoyo/dsh-file-mention-host": "workspace:^",
+    "@ohoyo/dsh-client-ui-file-mention": "workspace:^"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
+}

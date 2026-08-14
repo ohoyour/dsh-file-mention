@@ -1,0 +1,35 @@
+{
+  "name": "@ohoyo/dsh-file-mention-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "description": "Monorepo for the @file/@directory mention plugin (host + web client + bundle) for DeepSeek Harness.",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "smoke": "node scripts/smoke-client-bundle.mjs",
+    "pack:local": "node scripts/pack-local.mjs",
+    "release:check": "node scripts/check-release.mjs",
+    "link:checkout": "node scripts/link-local-checkout.mjs",
+    "unlink:checkout": "node scripts/unlink-local-checkout.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.2",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.5",
+    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.5",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.5",
+    "@deepseek-ai/dsh-client-ui-input-trigger": "^0.1.0-rc.5",
+    "@deepseek-ai/dsh-fs": "^0.1.0-rc.5",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.5",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.5",
+    "@types/node": "^22.20.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}
