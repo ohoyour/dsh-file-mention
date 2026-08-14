@@ -87,7 +87,7 @@ async function setup(list: unknown) {
 
 describe('file-mention client source', () => {
   it('mounts the fileIndex contribution and registers the @ source', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source, mounted } = await setup(list)
     expect(source).toMatchObject({ trigger: '@', name: 'file', order: -1 })
     expect(mounted).toHaveLength(1)
@@ -100,7 +100,7 @@ describe('file-mention client source', () => {
     const list = vi.fn(async (sessionId: string, request: { query?: string }) => {
       expect(sessionId).toBe('s1')
       expect(request).toEqual({ query: '' })
-      return { ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }
+      return { ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }
     })
     const { source } = await setup(list)
 
@@ -119,8 +119,44 @@ describe('file-mention client source', () => {
     expect(list).toHaveBeenCalledTimes(1)
   })
 
+  it('queries the Host when the initial snapshot is incomplete and caches each query', async () => {
+    const list = vi.fn(async (sessionId: string, request: { query?: string }) => {
+      expect(sessionId).toBe('s1')
+      if (request.query === '') {
+        return {
+          ok: true as const,
+          value: { files: [FIXTURE[0]!], complete: false, cacheTtlMs: 10_000 },
+        }
+      }
+      if (request.query === 'warning') {
+        return {
+          ok: true as const,
+          value: { files: [FIXTURE[0]!, FIXTURE[1]!], complete: false, cacheTtlMs: 10_000 },
+        }
+      }
+      return {
+        ok: true as const,
+        value: { files: [FIXTURE[1]!], complete: false, cacheTtlMs: 10_000 },
+      }
+    })
+    const { source } = await setup(list)
+
+    const first = await source.candidates(SESSION, REQ('warning'))
+    expect(first.map(candidate => candidate.name)).toEqual([
+      'warning-disposal-report/',
+      'index.vue',
+    ])
+    await source.candidates(SESSION, REQ('warning'))
+    await source.candidates(SESSION, REQ('index'))
+    expect(list.mock.calls.map(([, request]) => request)).toEqual([
+      { query: '' },
+      { query: 'warning' },
+      { query: 'index' },
+    ])
+  })
+
   it('disambiguates clashing basenames', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     const candidates = await source.candidates(SESSION, REQ('readme'))
     expect(candidates.map(candidate => candidate.name)).toEqual([
@@ -133,7 +169,7 @@ describe('file-mention client source', () => {
     const invalid = { type: 'file' as const, path: 'docs/bad name.txt', name: 'bad name.txt', dir: 'docs' }
     const list = vi.fn(async () => ({
       ok: true as const,
-      value: { files: [...FIXTURE, invalid], cacheTtlMs: 10_000 },
+      value: { files: [...FIXTURE, invalid], complete: true, cacheTtlMs: 10_000 },
     }))
     const { source } = await setup(list)
     expect(await source.candidates(SESSION, REQ('bad'))).toEqual([{
@@ -152,7 +188,7 @@ describe('file-mention client source', () => {
   })
 
   it('picks a structured reference with the exact workspace path', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     await source.candidates(SESSION, REQ('index'))
     expect(source.onPick(PICK('index.vue'))).toEqual({
@@ -176,7 +212,7 @@ describe('file-mention client source', () => {
   })
 
   it('serializes exact references through the source codec', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     expect(source.codec?.clipboardText('docs/bad name.txt')).toBe('@{docs/bad name.txt}')
     await expect(source.codec?.serialize('docs/a%7Db.md', new AbortController().signal))
@@ -188,7 +224,7 @@ describe('file-mention client source', () => {
   })
 
   it('exposes the flattened mention lexicon and notifies subscribers on settle', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     // Cold: no settled cache yet → no roll.
     expect(source.lexicon?.(SESSION)).toBeUndefined()
@@ -210,7 +246,7 @@ describe('file-mention client source', () => {
   })
 
   it('returns undefined for a pick with no backing row', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     expect(source.onPick(PICK('unknown.ts'))).toBeUndefined()
   })
@@ -231,7 +267,7 @@ describe('file-mention client source', () => {
   })
 
   it('yields [] for an aborted keystroke', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     const aborted = new AbortController()
     aborted.abort()
@@ -244,7 +280,7 @@ describe('file-mention client source', () => {
   })
 
   it('prewarms through the warm hook', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 10_000 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)
     source.warm?.(SESSION)
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -252,7 +288,7 @@ describe('file-mention client source', () => {
   })
 
   it('honors the host-provided cache TTL', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, cacheTtlMs: 0 } }))
+    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 0 } }))
     const { source } = await setup(list)
     await source.candidates(SESSION, REQ('warning'))
     await source.candidates(SESSION, REQ('warning'))

@@ -149,12 +149,14 @@ describe('FileIndexService.list', () => {
     const { service, agent } = setup({ ...defaults, indexLimit: 1, indexTtlMs: 1_234 })
     const result = await service.list(agent, { query: '' })
     expect(result.files).toHaveLength(1)
+    expect(result.complete).toBe(false)
     expect(result.cacheTtlMs).toBe(1_234)
   })
 
   it('returns a full index including directory rows', async () => {
     const { service, agent } = setup()
     const result = await service.list(agent, { query: '' })
+    expect(result.complete).toBe(true)
     const paths = result.files.map(row => row.path)
     expect(paths).toContain('warning-disposal-report')
     expect(paths).toContain('warning-disposal-report/sub')
@@ -166,6 +168,14 @@ describe('FileIndexService.list', () => {
     expect(dirRow).toMatchObject({ type: 'directory', name: 'warning-disposal-report', dir: '' })
     const fileRow = result.files.find(row => row.path === 'warning-disposal-report/index.vue')
     expect(fileRow).toMatchObject({ type: 'file', name: 'index.vue', dir: 'warning-disposal-report' })
+  })
+
+  it('searches beyond a capped snapshot for non-empty queries', async () => {
+    const defaults = Config()
+    const { service, agent } = setup({ ...defaults, indexLimit: 1 })
+    const result = await service.list(agent, { query: 'space' })
+    expect(result.files.map(row => row.path)).toContain('docs/space name.md')
+    expect(result.complete).toBe(true)
   })
 
   it('filters and ranks a query (directory base first, then path length)', async () => {
@@ -183,7 +193,38 @@ describe('FileIndexService.list', () => {
   it('returns an empty index when the session has no cwd', async () => {
     const { service, agent } = setup()
     const noCwd = { ...agent, session: { header: {}, events: [] } } as unknown as Agent
-    await expect(service.list(noCwd, { query: '' })).resolves.toEqual({ files: [], cacheTtlMs: 15_000 })
+    await expect(service.list(noCwd, { query: '' })).resolves.toEqual({
+      files: [],
+      complete: true,
+      cacheTtlMs: 15_000,
+    })
+  })
+
+  it('invalidates the cached index after an explicit workspace change', async () => {
+    const files = { ...TREE }
+    const root = new Context()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.provide('fs', fakeFs(files) as any)
+    const service = new FileIndexService(root, { ...Config(), indexLimit: 1 })
+    const agent = makeAgent(CWD)
+
+    await service.list(agent, { query: '' })
+    delete files['/ws/docs/a.md']
+    const missing = await service.list(agent, { query: 'a.md' })
+    expect(missing.files).toHaveLength(0)
+    files['/ws/docs/a.md'] = '# restored'
+    const staleQuery = await service.list(agent, { query: 'a.md' })
+    expect(staleQuery.files).toHaveLength(0)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.emit(
+      'fs/observed',
+      { targetKey: '/ws/docs/a.md', displayPath: '/ws/docs/a.md' } as any,
+      { kind: 'present', version: 'v' },
+      { name: 'write' },
+    )
+    const rebuilt = await service.list(agent, { query: 'a.md' })
+    expect(rebuilt.files.map(row => row.path)).toContain('docs/a.md')
   })
 
   it('does not inject an absolute path outside the workspace', async () => {

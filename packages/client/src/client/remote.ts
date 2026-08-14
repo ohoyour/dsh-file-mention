@@ -23,6 +23,7 @@ export interface IndexRowWire {
 /** Wire result of `fileIndex/list`. */
 export interface IndexResultWire {
   readonly files: readonly IndexRowWire[]
+  readonly complete: boolean
   readonly cacheTtlMs: number
 }
 
@@ -44,6 +45,7 @@ const indexRowSchema = z.object({
 const listRequestSchema = z.object({ query: z.string().optional() }).readonly()
 const listResultSchema = z.object({
   files: z.array(indexRowSchema).readonly(),
+  complete: z.boolean(),
   cacheTtlMs: z.number(),
 }).readonly()
 

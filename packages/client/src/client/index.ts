@@ -2,11 +2,13 @@
  * Browser half of the file-mention plugin: the `@` input-trigger source.
  *
  * Flicker-free candidates are the core requirement: a sessionId-level cache
- * of the full Host index (Host-configured TTL, single-flight, fetched once with
- * `query: ''`) backs pure-local per-keystroke filtering with the same ranking
- * rules the Host uses. A pick inserts a structured `ReferenceInsert` carrying
- * the exact workspace-relative path; the source codec serializes it only when
- * the message is sent, so labels are independent from path syntax.
+ * of the Host index (Host-configured TTL, single-flight) backs local filtering
+ * when the snapshot is complete. A capped Host snapshot is marked incomplete;
+ * in that case repeated query strings use a bounded per-session query cache
+ * while each distinct query is resolved remotely. A pick inserts a structured
+ * `ReferenceInsert` carrying the exact workspace-relative path; the source
+ * codec serializes it only when the message is sent, so labels are independent
+ * from path syntax.
  *
  * The plugin mounts its own Typert contribution (`remote.fileIndex`) through
  * `ctx.remote.$mount` — the third-party equivalent of what
@@ -50,6 +52,15 @@ interface FileIndexNamespace {
 interface IndexEntry {
   promise: Promise<readonly IndexRowWire[]>
   rows?: readonly IndexRowWire[]
+  complete?: boolean
+  settledAt?: number
+  ttlMs?: number
+  queries: Map<string, QueryEntry>
+}
+
+interface QueryEntry {
+  promise: Promise<readonly IndexRowWire[]>
+  rows?: readonly IndexRowWire[]
   settledAt?: number
   ttlMs?: number
 }
@@ -62,6 +73,7 @@ interface MentionRoll {
 
 /** Bound browser memory when one page visits many sessions. */
 const MAX_SESSION_CACHE_ENTRIES = 64
+const MAX_QUERY_CACHE_ENTRIES = 32
 
 /**
  * Client plugin body: mount the `fileIndex` Remote namespace, then register
@@ -122,6 +134,20 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     }
   }
 
+  const touchQuery = (entry: IndexEntry, query: string, queryEntry: QueryEntry): void => {
+    if (entry.queries.get(query) !== queryEntry) return
+    entry.queries.delete(query)
+    entry.queries.set(query, queryEntry)
+  }
+
+  const pruneQueries = (entry: IndexEntry): void => {
+    while (entry.queries.size > MAX_QUERY_CACHE_ENTRIES) {
+      const oldest = entry.queries.keys().next().value
+      if (oldest === undefined) break
+      entry.queries.delete(oldest)
+    }
+  }
+
   /**
    * SessionId-level index cache: Host-configured TTL + single-flight. A failed fetch
    * drops the key so the next keystroke retries instead of caching failure.
@@ -140,6 +166,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     }
     const entry: IndexEntry = {
       promise: Promise.resolve([] as readonly IndexRowWire[]),
+      queries: new Map(),
     }
     entry.promise = (async () => {
       const answered = await fileIndex.list(sessionId, { query: '' })
@@ -152,6 +179,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       const current = entries.get(sessionId)
       if (current === entry) {
         current.rows = rows
+        current.complete = answered.value.complete
         current.settledAt = Date.now()
         current.ttlMs = answered.value.cacheTtlMs
         rolls.set(sessionId, {
@@ -173,6 +201,56 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     return entry.promise
   }
 
+  /**
+   * Use local ranking for complete snapshots. Capped snapshots query the Host
+   * for each distinct non-empty query, with the same TTL/single-flight rules.
+   */
+  const ensureCandidates = async (
+    sessionId: string,
+    query: string,
+  ): Promise<readonly IndexRowWire[]> => {
+    const rows = await ensureIndex(sessionId)
+    const entry = entries.get(sessionId)
+    const queryKey = query.trim()
+    if (entry === undefined || entry.complete !== false || queryKey === '') return rows
+
+    const existing = entry.queries.get(queryKey)
+    if (existing !== undefined) {
+      touchQuery(entry, queryKey, existing)
+      if (existing.rows !== undefined && Date.now() - (existing.settledAt ?? 0) < (existing.ttlMs ?? 0)) {
+        return existing.rows
+      }
+      if (existing.settledAt === undefined) return existing.promise
+    }
+
+    const queryEntry: QueryEntry = {
+      promise: Promise.resolve([] as readonly IndexRowWire[]),
+    }
+    queryEntry.promise = (async () => {
+      const answered = await fileIndex.list(sessionId, { query: queryKey })
+      if (!answered.ok) {
+        throw new Error(`fileIndex.list failed: ${answered.error.code}: ${answered.error.message}`)
+      }
+      const resultRows = answered.value.files
+      const current = entries.get(sessionId)
+      if (current === entry) {
+        queryEntry.rows = resultRows
+        queryEntry.settledAt = Date.now()
+        queryEntry.ttlMs = answered.value.cacheTtlMs
+        touchQuery(entry, queryKey, queryEntry)
+        pruneQueries(entry)
+      }
+      return resultRows
+    })()
+    entry.queries.set(queryKey, queryEntry)
+    pruneQueries(entry)
+    void queryEntry.promise.catch((error: unknown) => {
+      if (entry.queries.get(queryKey) === queryEntry) entry.queries.delete(queryKey)
+      console.error('[file-mention] index query failed:', error)
+    })
+    return queryEntry.promise
+  }
+
   const source: InputTriggerSource = {
     trigger: '@',
     name: 'file',
@@ -183,7 +261,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     },
     async candidates(session, { query, signal }) {
       try {
-        const rows = await ensureIndex(session.sessionId)
+        const rows = await ensureCandidates(session.sessionId, query)
         // Superseded keystroke: the shared fetch stays warm, this caller yields.
         if (signal.aborted) return []
         // Structured picks do not need to satisfy the legacy plain-text chip

@@ -12,10 +12,14 @@ Typert namespace `fileIndex`, method `@Remote('list') list(agent, request)`:
   directories** with `{ type, path, name, dir }` rows (relative, forward slashes).
 - Skips noise dirs (`node_modules`, `.git`, `dist`, …), capped at 5000 rows / depth 14.
 - Cached per cwd (default TTL 15 s; configurable) with single-flight in-flight dedupe;
-  the cache keeps at most 32 cwd indexes (`indexCacheEntries`).
-- `query: ''` returns the whole index (the client filters locally per keystroke);
-  otherwise the shared ranking rules apply (base === query > base.startsWith >
-  path.startsWith > path.includes, then path length, top 20).
+  the cache keeps at most 32 cwd indexes (`indexCacheEntries`). Successful `write`
+  and `edit` filesystem observations invalidate the cached snapshots.
+- `query: ''` returns the snapshot plus `complete`; `complete: false` means the
+  configured row cap or a listing failure prevented an exhaustive walk. Otherwise
+  the shared ranking rules apply (base === query > base.startsWith >
+  path.startsWith > path.includes, then path length, top 20). For an incomplete
+  snapshot, a non-empty query performs a scoped metadata walk and caches only its
+  matching rows, so results are not limited to the first 5000 entries.
 
 The runtime has no generated typert descriptor, so the gateway's **SRC fallback**
 derives the invocation descriptor from the `typertRemote` binding, the `@Remote`

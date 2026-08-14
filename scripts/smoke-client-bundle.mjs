@@ -42,7 +42,7 @@ root.provide('remote', {
 root.provide('remote.fileIndex', {
   list: async (sessionId, request) => {
     console.log('  remote call:', sessionId, JSON.stringify(request))
-    return { ok: true, value: { files: FIXTURE, cacheTtlMs: 15_000 } }
+    return { ok: true, value: { files: FIXTURE, complete: true, cacheTtlMs: 15_000 } }
   },
 })
 const sources = []

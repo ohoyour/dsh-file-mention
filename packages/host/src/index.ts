@@ -28,7 +28,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { FsDirEntry, FsInfo, FsTarget } from '@deepseek-ai/dsh-fs'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import { rankRows } from './rank.ts'
+import { rankRows, rankScore } from './rank.ts'
 import type { RankableRow } from './rank.ts'
 
 /** Stable plugin identity used in injected message sources. */
@@ -50,8 +50,15 @@ export interface IndexRequest {
 /** Result shape of the `fileIndex/list` Remote method. */
 export interface IndexResult {
   readonly files: readonly IndexRow[]
+  /** Whether the returned rows cover the configured workspace scope. */
+  readonly complete: boolean
   /** Cache lifetime to use for the client's settled snapshot. */
   readonly cacheTtlMs: number
+}
+
+interface IndexSnapshot {
+  readonly rows: IndexRow[]
+  readonly complete: boolean
 }
 
 /** Deployment controls for indexing and context injection. */
@@ -126,6 +133,7 @@ const DEFAULT_INDEX_LIMIT = 5000
 const DEFAULT_INDEX_DEPTH = 14
 const DEFAULT_INDEX_CACHE_ENTRIES = 32
 const DEFAULT_INDEX_TTL_MS = 15_000
+const MAX_QUERY_CACHE_ENTRIES = 128
 
 /** @file: whole-file read threshold; above (or unknown) stream-truncate. */
 const DEFAULT_FILE_SAFE_SIZE_BYTES = 400 * 1024
@@ -290,6 +298,16 @@ function relFor(cwd: string, token: string): string {
   return rel.replace(/\/+$/, '')
 }
 
+/** `fs/observed` carries an opaque ToolExecution actor; only writes mutate the index. */
+function isMutationActor(actor: object | undefined): boolean {
+  if (actor === undefined) return false
+  const operation = (actor as { readonly name?: unknown }).name
+  return operation === 'write'
+    || operation === 'edit'
+    || operation === 'tool:write'
+    || operation === 'tool:edit'
+}
+
 /** Format the `<file_context>` message text (handoff template). */
 function fileContextText(rel: string, read: BoundedText, limit: number): string {
   const content = read.truncated
@@ -313,8 +331,12 @@ export default class FileIndexService extends TypertRemoteService {
 
   private readonly config: Config
   private readonly noiseDirs: ReadonlySet<string>
-  private readonly indexCache = new Map<string, { rows: IndexRow[]; at: number }>()
-  private readonly indexFlights = new Map<string, Promise<IndexRow[]>>()
+  private readonly indexCache = new Map<string, IndexSnapshot & { at: number }>()
+  private readonly indexFlights = new Map<string, Promise<IndexSnapshot>>()
+  private readonly queryCache = new Map<string, IndexSnapshot & { at: number }>()
+  private readonly queryFlights = new Map<string, Promise<IndexSnapshot>>()
+  /** Prevent an in-flight pre-mutation walk from repopulating the cache. */
+  private readonly indexGenerations = new Map<string, number>()
   /** Per-agent turn budget: at most 5 injected references per turn, deduped by path. */
   private readonly turnState = new Map<string, {
     turn: number
@@ -328,50 +350,119 @@ export default class FileIndexService extends TypertRemoteService {
     this.config = config
     this.noiseDirs = new Set(config.noiseDirs)
     ctx.on('agent/pre-step', (payload, next) => this.handlePreStep(payload, next), { prepend: true })
+    ctx.on('fs/observed', (_target, _observation, actor) => {
+      if (!isMutationActor(actor)) return
+      this.invalidateIndex()
+    })
   }
 
   // ── A. index Remote service ────────────────────────────────────────────────
 
   /**
    * Remote method `fileIndex/list`. An empty query returns the complete
-   * cached index (the Client fetches it once and filters locally); otherwise
-   * the shared ranking rules apply, capped at 20 rows.
+   * cached index; otherwise the shared ranking rules apply, capped at 20 rows.
+   * Incomplete snapshots are explicitly marked so the Client can query the
+   * Host instead of pretending that a capped snapshot is exhaustive.
    */
   @Remote('list')
   async list(agent: Agent, request: IndexRequest): Promise<IndexResult> {
-    const rows = await this.ensureIndex(agent)
+    const cwd = agent.session.header.cwd
+    if (cwd === undefined) {
+      return { files: [], complete: true, cacheTtlMs: this.config.indexTtlMs }
+    }
+    const snapshot = await this.ensureIndexByCwd(cwd)
     const query = request?.query ?? ''
-    if (query.trim() === '') return { files: rows, cacheTtlMs: this.config.indexTtlMs }
-    return { files: rankRows(rows, query, 20), cacheTtlMs: this.config.indexTtlMs }
+    if (query.trim() === '') {
+      return {
+        files: snapshot.rows,
+        complete: snapshot.complete,
+        cacheTtlMs: this.config.indexTtlMs,
+      }
+    }
+    if (!snapshot.complete) {
+      const queried = await this.ensureQueryByCwd(cwd, query)
+      return {
+        files: rankRows(queried.rows, query, 20),
+        complete: queried.complete,
+        cacheTtlMs: this.config.indexTtlMs,
+      }
+    }
+    return {
+      files: rankRows(snapshot.rows, query, 20),
+      complete: snapshot.complete,
+      cacheTtlMs: this.config.indexTtlMs,
+    }
   }
 
   /** Cached, single-flight index of the agent's workspace. */
   async ensureIndex(agent: Agent): Promise<IndexRow[]> {
+    return (await this.ensureIndexSnapshot(agent)).rows
+  }
+
+  /** Invalidate cached snapshots after a mutation (or explicitly in tests). */
+  invalidateIndex(cwd?: string): void {
+    const keys = cwd === undefined
+      ? new Set([
+        ...this.indexCache.keys(),
+        ...this.indexFlights.keys(),
+        ...[...this.queryCache.keys(), ...this.queryFlights.keys()]
+          .map(key => key.slice(0, key.indexOf('\0'))),
+      ])
+      : new Set([cwd])
+    if (cwd === undefined) {
+      this.indexCache.clear()
+      this.queryCache.clear()
+      this.queryFlights.clear()
+    }
+    for (const key of keys) {
+      this.indexGenerations.set(key, (this.indexGenerations.get(key) ?? 0) + 1)
+      if (cwd !== undefined) {
+        this.indexCache.delete(key)
+        this.deleteQueryEntries(key)
+      }
+      this.indexFlights.delete(key)
+    }
+  }
+
+  private deleteQueryEntries(cwd: string): void {
+    const prefix = `${cwd}\0`
+    for (const key of this.queryCache.keys()) {
+      if (key.startsWith(prefix)) this.queryCache.delete(key)
+    }
+    for (const key of this.queryFlights.keys()) {
+      if (key.startsWith(prefix)) this.queryFlights.delete(key)
+    }
+  }
+
+  private async ensureIndexSnapshot(agent: Agent): Promise<IndexSnapshot> {
     const cwd = agent.session.header.cwd
-    if (cwd === undefined) return []
+    if (cwd === undefined) return { rows: [], complete: true }
     return this.ensureIndexByCwd(cwd)
   }
 
-  private ensureIndexByCwd(cwd: string): Promise<IndexRow[]> {
+  private ensureIndexByCwd(cwd: string): Promise<IndexSnapshot> {
     const cached = this.indexCache.get(cwd)
     if (cached !== undefined && Date.now() - cached.at < this.config.indexTtlMs) {
       this.indexCache.delete(cwd)
       this.indexCache.set(cwd, cached)
-      return Promise.resolve(cached.rows)
+      return Promise.resolve(cached)
     }
     const flight = this.indexFlights.get(cwd)
     if (flight !== undefined) return flight
-    const build = this.buildIndex(cwd).then((rows) => {
-      this.indexCache.set(cwd, { rows, at: Date.now() })
-      while (this.indexCache.size > this.config.indexCacheEntries) {
-        const oldest = this.indexCache.keys().next().value
-        if (oldest === undefined) break
-        this.indexCache.delete(oldest)
+    const generation = this.indexGenerations.get(cwd) ?? 0
+    const build = this.buildIndex(cwd).then((snapshot) => {
+      if ((this.indexGenerations.get(cwd) ?? 0) === generation) {
+        this.indexCache.set(cwd, { ...snapshot, at: Date.now() })
+        while (this.indexCache.size > this.config.indexCacheEntries) {
+          const oldest = this.indexCache.keys().next().value
+          if (oldest === undefined) break
+          this.indexCache.delete(oldest)
+        }
       }
-      return rows
+      return snapshot
     }, (error: unknown) => {
       this.warn(`failed to build workspace index for "${cwd}"`, error)
-      return []
+      return { rows: [], complete: false }
     })
     this.indexFlights.set(cwd, build)
     void build.then(() => {
@@ -382,10 +473,46 @@ export default class FileIndexService extends TypertRemoteService {
     return build
   }
 
+  /** Search the configured workspace scope when the bounded snapshot is partial. */
+  private ensureQueryByCwd(cwd: string, query: string): Promise<IndexSnapshot> {
+    const key = `${cwd}\0${query.toLowerCase().replace(/\\/g, '/')}`
+    const cached = this.queryCache.get(key)
+    if (cached !== undefined && Date.now() - cached.at < this.config.indexTtlMs) {
+      this.queryCache.delete(key)
+      this.queryCache.set(key, cached)
+      return Promise.resolve(cached)
+    }
+    const flight = this.queryFlights.get(key)
+    if (flight !== undefined) return flight
+    const generation = this.indexGenerations.get(cwd) ?? 0
+    const build = this.searchIndex(cwd, query).then((snapshot) => {
+      if ((this.indexGenerations.get(cwd) ?? 0) === generation) {
+        this.queryCache.set(key, { ...snapshot, at: Date.now() })
+        while (this.queryCache.size > MAX_QUERY_CACHE_ENTRIES) {
+          const oldest = this.queryCache.keys().next().value
+          if (oldest === undefined) break
+          this.queryCache.delete(oldest)
+        }
+      }
+      return snapshot
+    }, (error: unknown) => {
+      this.warn(`failed to search workspace "${cwd}"`, error)
+      return { rows: [], complete: false }
+    })
+    this.queryFlights.set(key, build)
+    void build.then(() => {
+      if (this.queryFlights.get(key) === build) this.queryFlights.delete(key)
+    }, () => {
+      if (this.queryFlights.get(key) === build) this.queryFlights.delete(key)
+    })
+    return build
+  }
+
   /** BFS walk of the workspace: files and directories, noise dirs skipped. */
-  private async buildIndex(cwd: string): Promise<IndexRow[]> {
+  private async buildIndex(cwd: string): Promise<IndexSnapshot> {
     const root = await this.ctx.fs.resolve(cwd)
     const rows: IndexRow[] = []
+    let complete = true
     const queue: Array<{ target: FsTarget; rel: string; depth: number }> = [
       { target: root, rel: '', depth: 0 },
     ]
@@ -397,10 +524,14 @@ export default class FileIndexService extends TypertRemoteService {
         entries = await this.ctx.fs.listDir(target)
       } catch (error) {
         this.warn(`failed to list directory "${rel || cwd}"`, error)
+        complete = false
         continue
       }
       for (const entry of entries) {
-        if (rows.length >= this.config.indexLimit) break
+        if (rows.length >= this.config.indexLimit) {
+          complete = false
+          break
+        }
         if (!this.ctx.fs.contains(root, entry.target)) {
           this.warn(`skipping workspace entry outside root: "${entry.name}"`, 'outside workspace')
           continue
@@ -416,8 +547,51 @@ export default class FileIndexService extends TypertRemoteService {
           rows.push({ type: 'file', path, name: entry.name, dir: rel })
         }
       }
+      if (!complete) break
     }
-    return rows
+    if (rows.length >= this.config.indexLimit) complete = false
+    return { rows, complete }
+  }
+
+  /** Full metadata walk for one query; it does not retain non-matching rows. */
+  private async searchIndex(cwd: string, query: string): Promise<IndexSnapshot> {
+    const root = await this.ctx.fs.resolve(cwd)
+    const rows: IndexRow[] = []
+    let complete = true
+    const queue: Array<{ target: FsTarget; rel: string; depth: number }> = [
+      { target: root, rel: '', depth: 0 },
+    ]
+    let head = 0
+    while (head < queue.length) {
+      const { target, rel, depth } = queue[head++]!
+      let entries: FsDirEntry[]
+      try {
+        entries = await this.ctx.fs.listDir(target)
+      } catch (error) {
+        this.warn(`failed to search directory "${rel || cwd}"`, error)
+        complete = false
+        continue
+      }
+      for (const entry of entries) {
+        if (!this.ctx.fs.contains(root, entry.target)) {
+          this.warn(`skipping workspace entry outside root: "${entry.name}"`, 'outside workspace')
+          continue
+        }
+        const path = rel === '' ? entry.name : `${rel}/${entry.name}`
+        if (entry.type === 'directory') {
+          if (this.noiseDirs.has(entry.name)) continue
+          const row: IndexRow = { type: 'directory', path, name: entry.name, dir: rel }
+          if (rankScore(row, query) !== undefined) rows.push(row)
+          if (depth < this.config.indexDepth) {
+            queue.push({ target: entry.target, rel: path, depth: depth + 1 })
+          }
+        } else if (entry.type === 'file') {
+          const row: IndexRow = { type: 'file', path, name: entry.name, dir: rel }
+          if (rankScore(row, query) !== undefined) rows.push(row)
+        }
+      }
+    }
+    return { rows, complete }
   }
 
   // ── B. pre-step injection ──────────────────────────────────────────────────
@@ -532,7 +706,7 @@ export default class FileIndexService extends TypertRemoteService {
     if (exact) return []
     if (signal.aborted) return []
     // 2) index suffix matching
-    const rows = await this.ensureIndexByCwd(cwd)
+    const rows = (await this.ensureIndexByCwd(cwd)).rows
     if (signal.aborted) return []
     const dirRows = rows.filter(row => row.type === 'directory'
       && (row.path === norm || row.path.endsWith(`/${norm}`)))

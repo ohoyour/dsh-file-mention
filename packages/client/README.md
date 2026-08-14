@@ -9,10 +9,12 @@ input-trigger source** (`trigger: '@'`, `name: 'file'`, `order: -1`).
   (`ctx.remote.$mount(TYPERT_REMOTE)`, namespace `fileIndex` — the third-party
   equivalent of what `@deepseek-ai/dsh-api-remotes` does for built-in namespaces),
   then registers the source.
-- **No per-keystroke RPC**: a sessionId-level cache (host-configured TTL + single-flight)
-  fetches the full index once (`fileIndex.list(sessionId, { query: '' })`) and
-  `candidates()` filters/ranks locally with the same rules as the Host — the
-  flicker-free guarantee.
+- A complete snapshot uses a sessionId-level cache (host-configured TTL +
+  single-flight) and `candidates()` filters/ranks locally with the same rules as
+  the Host — the flicker-free fast path. When the Host marks the snapshot
+  `complete: false` because the workspace exceeds the index cap, each distinct
+  non-empty query is resolved remotely and retained in a bounded per-session
+  TTL cache, avoiding both false negatives and repeated RPCs while typing.
 - Candidates: files `📄` `name` + parent-dir description; directories `📁`
   `name/`; clashing basenames become `dir/名字` (directories keep `/`) so menu
   React keys stay unique.
