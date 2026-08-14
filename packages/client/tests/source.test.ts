@@ -100,39 +100,14 @@ describe('file-mention client source', () => {
     ])
   })
 
-  it('picks insert an occurrence chip with the real path label', async () => {
+  it('picks insert the full chip-compatible flattened @ token', async () => {
     const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
     const { source } = await setup(list)
     await source.candidates(SESSION, REQ('index'))
-    expect(source.onPick(PICK('index.vue'))).toEqual({
-      insert: {
-        source: 'file',
-        ref: 'warning-disposal-report-index-vue|warning-disposal-report/index.vue',
-        label: '📄 warning-disposal-report/index.vue',
-        clipboardText: 'warning-disposal-report/index.vue',
-      },
-    })
+    expect(source.onPick(PICK('index.vue'))).toEqual({ text: '@warning-disposal-report-index-vue ' })
 
     await source.candidates(SESSION, REQ('warning'))
-    expect(source.onPick(PICK('warning-disposal-report/'))).toEqual({
-      insert: {
-        source: 'file',
-        ref: 'warning-disposal-report|warning-disposal-report/',
-        label: '📁 warning-disposal-report/',
-        clipboardText: 'warning-disposal-report/',
-      },
-    })
-  })
-
-  it('serializes insert references to the chip token and clips the real path', async () => {
-    const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE } }))
-    const { source } = await setup(list)
-    expect(source.codec).toBeDefined()
-    const ref = 'warning-disposal-report-index-vue|warning-disposal-report/index.vue'
-    await expect(source.codec!.serialize(ref, new AbortController().signal)).resolves.toBe(
-      '@warning-disposal-report-index-vue ',
-    )
-    expect(source.codec!.clipboardText(ref)).toBe('warning-disposal-report/index.vue')
+    expect(source.onPick(PICK('warning-disposal-report/'))).toEqual({ text: '@warning-disposal-report ' })
   })
 
   it('exposes the flattened mention lexicon and notifies subscribers on settle', async () => {

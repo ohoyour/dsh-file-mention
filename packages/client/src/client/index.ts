@@ -26,7 +26,7 @@ import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
 import type { IndexRowWire } from './remote.ts'
 import {
-  buildMentionCounts, displayPath, mentionName, mentionToken, rankRows, uniqueCandidates,
+  buildMentionCounts, mentionName, mentionToken, rankRows, uniqueCandidates,
 } from './rank.ts'
 
 export const name = 'file-mention'
@@ -163,25 +163,17 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     onPick({ session, candidate }) {
       const row = picks.get(session.sessionId)?.get(candidate.name)
       if (row === undefined) return undefined
-      // Occurrence-chip insert: the INPUT chip label is the real display path
-      // (slashes allowed — the chip label is arbitrary text), e.g.
-      // `📄 warning-disposal-report/index.vue` / `📁 warning-disposal-report/`.
-      // The model-facing text is serialized on submit by the codec as the
-      // chip-compatible `@<minimal unique suffix>` token, which the Host
-      // resolves by suffix-matching and the conversation bubble decorates by
-      // shape (the bubble scan only accepts `[\w-]+` — a platform limit).
+      // Plain-text reference (the same decision as ui-skill / ui-subagent):
+      // the draft gains the literal `@<minimal unique suffix>` token and the
+      // composer decorates it as a chip by scanning against our lexicon.
+      // This path is deliberate: the occurrence-chip alternative renders in a
+      // fixed ~4em cell whose label is clipped with an ellipsis (built-in
+      // InputBar CSS) — long paths get cut off — while the plain-text
+      // decoration paints the chip look over the draft's own glyphs, so the
+      // whole token stays visible. The Host resolves the token by
+      // suffix-matching the index.
       const counts = rolls.get(session.sessionId)?.counts ?? new Map<string, number>()
-      const token = mentionToken(row, counts).slice(1)
-      const label = displayPath(row)
-      return {
-        insert: {
-          source: 'file',
-          // `token|label` — the codec splits it back apart at submit/copy time.
-          ref: `${token}|${label}`,
-          label: `${row.type === 'directory' ? '📁' : '📄'} ${label}`,
-          clipboardText: label,
-        },
-      }
+      return { text: `${mentionToken(row, counts)} ` }
     },
     lexicon(session) {
       // Mention names of the settled cache: the composer chips hand-typed
@@ -197,12 +189,6 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         listeners.delete(listener)
         if (listeners.size === 0) lexiconListeners.delete(key)
       }
-    },
-    // Reference codec for insert outcomes: serialize → the flattened chip
-    // token (model + bubble + host resolution); clipboardText → the real path.
-    codec: {
-      clipboardText: ref => ref.split('|')[1] ?? ref,
-      serialize: (ref, _signal) => Promise.resolve(`@${ref.split('|')[0] ?? ref} `),
     },
   }
 
