@@ -178,6 +178,39 @@ describe('file-mention client source', () => {
     expect(list).toHaveBeenCalledTimes(1)
   })
 
+  it('refreshes the base snapshot when a query observes a newer Host revision', async () => {
+    let revision = 0
+    const list = vi.fn(async (_sessionId: string, request: { query?: string }) => {
+      if (request.query === '') {
+        return {
+          ok: true as const,
+          value: {
+            files: revision === 0 ? [FIXTURE[0]!] : [FIXTURE[2]!],
+            complete: false,
+            revision,
+            cacheTtlMs: 10_000,
+          },
+        }
+      }
+      revision = 1
+      return {
+        ok: true as const,
+        value: { files: [FIXTURE[1]!], complete: false, revision, cacheTtlMs: 10_000 },
+      }
+    })
+    const { source } = await setup(list)
+
+    await source.candidates(SESSION, REQ('warning'))
+    await source.candidates(SESSION, REQ('index'))
+
+    expect(list.mock.calls.map(([, request]) => request)).toEqual([
+      { query: '' },
+      { query: 'warning' },
+      { query: '' },
+      { query: 'index' },
+    ])
+  })
+
   it('disambiguates clashing basenames', async () => {
     const list = vi.fn(async () => ({ ok: true as const, value: { files: FIXTURE, complete: true, cacheTtlMs: 10_000 } }))
     const { source } = await setup(list)

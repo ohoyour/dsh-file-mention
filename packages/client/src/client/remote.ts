@@ -24,6 +24,7 @@ export interface IndexRowWire {
 export interface IndexResultWire {
   readonly files: readonly IndexRowWire[]
   readonly complete: boolean
+  readonly revision: number
   readonly cacheTtlMs: number
 }
 
@@ -46,6 +47,8 @@ const listRequestSchema = z.object({ query: z.string().optional() }).readonly()
 const listResultSchema = z.object({
   files: z.array(indexRowSchema).readonly(),
   complete: z.boolean(),
+  // Older Host builds did not expose revisions; normalize them to generation 0.
+  revision: z.number().int().nonnegative().default(0),
   cacheTtlMs: z.number(),
 }).readonly()
 

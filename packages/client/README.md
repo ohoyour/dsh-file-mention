@@ -17,6 +17,9 @@ input-trigger source** (`trigger: '@'`, `name: 'file'`, `order: -1`).
   TTL cache. The Host shares one bounded metadata catalog across those queries,
   avoiding repeated workspace walks while typing. Incomplete-mode queries use a
   50 ms abort-aware debounce, so superseded keystrokes do not start an RPC.
+  Each response also carries a Host mutation `revision`; if a query observes a
+  newer revision than the base snapshot, the client returns that query result
+  but discards its session cache so the next request refetches the base index.
 - Candidates: files `📄` `name` + parent-dir description; directories `📁`
   `name/`; clashing basenames become `dir/名字` (directories keep `/`) so menu
   React keys stay unique.

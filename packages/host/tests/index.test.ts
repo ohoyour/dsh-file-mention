@@ -152,6 +152,7 @@ describe('FileIndexService.list', () => {
     const result = await service.list(agent, { query: '' })
     expect(result.files).toHaveLength(1)
     expect(result.complete).toBe(false)
+    expect(result.revision).toBe(0)
     expect(result.cacheTtlMs).toBe(1_234)
   })
 
@@ -159,6 +160,7 @@ describe('FileIndexService.list', () => {
     const { service, agent } = setup()
     const result = await service.list(agent, { query: '' })
     expect(result.complete).toBe(true)
+    expect(result.revision).toBe(0)
     const paths = result.files.map(row => row.path)
     expect(paths).toContain('warning-disposal-report')
     expect(paths).toContain('warning-disposal-report/sub')
@@ -217,6 +219,7 @@ describe('FileIndexService.list', () => {
     await expect(service.list(noCwd, { query: '' })).resolves.toEqual({
       files: [],
       complete: true,
+      revision: 0,
       cacheTtlMs: 15_000,
     })
   })
@@ -246,6 +249,7 @@ describe('FileIndexService.list', () => {
     )
     const rebuilt = await service.list(agent, { query: 'a.md' })
     expect(rebuilt.files.map(row => row.path)).toContain('docs/a.md')
+    expect(rebuilt.revision).toBe(1)
   })
 
   it('does not inject an absolute path outside the workspace', async () => {

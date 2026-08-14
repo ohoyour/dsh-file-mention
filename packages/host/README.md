@@ -14,7 +14,8 @@ Typert namespace `fileIndex`, method `@Remote('list') list(agent, request)`:
 - Cached per cwd (default TTL 15 s; configurable) with single-flight in-flight dedupe;
   the cache keeps at most 32 cwd indexes (`indexCacheEntries`). Successful `write`
   and `edit` filesystem observations invalidate the cached snapshots.
-- `query: ''` returns the snapshot plus `complete`; `complete: false` means the
+- `query: ''` returns the snapshot plus `complete` and a monotonic `revision`;
+  `complete: false` means the
   configured row cap or a listing failure prevented an exhaustive walk. Otherwise
   the shared ranking rules apply (base === query > base.startsWith >
   path.startsWith > path.includes, then path length, top 20). For an incomplete
@@ -58,8 +59,9 @@ legacy `@token`, and `` `short/path` `` references (dynamic plugin ids
 The plugin exports a Schemastery `Config` schema. Defaults preserve the limits
 above, while deployments can override index depth/size/TTL and directory/file
 context budgets from the composition row's `config` object. The `fileIndex/list`
-  response carries the configured index TTL to the browser so host and client
-  caches use one policy. Large-workspace query catalogs are independently bounded
+  response carries the configured index TTL and mutation revision to the browser
+  so host and client caches use one policy and can discard stale query results.
+  Large-workspace query catalogs are independently bounded
   by `searchIndexLimit` (default 100,000 rows) and `searchCacheEntries` (default 4).
 
 ## Development

@@ -20,7 +20,7 @@ DeepSeek Harness 的 **@file / @dir 提及插件**（功能对齐 Codex CLI 的 
 pnpm install --frozen-lockfile  # 从 lockfile 安装 registry 依赖
 pnpm build          # tsdown 构建 lib/（host/client 含类型声明；client.js 为浏览器 factory bundle）
 pnpm typecheck      # tsc --noEmit
-pnpm test           # vitest / node:test（Host + Client 60 用例、bundle 2 用例）
+pnpm test           # vitest / node:test（Host + Client 66 用例、bundle 2 用例）
 pnpm smoke          # 构建产物冒烟（built client.js + cordis Context 驱动）
 pnpm pack:local     # 生成可在仓库外 profile 安装的三个 tarball
 ```
@@ -109,7 +109,8 @@ pnpm pack:local
   Host 端检索；已完成索引仍走本地过滤，避免逐键 RPC 和菜单闪烁。写入/编辑文件后
   Host 会失效索引缓存。不完整索引的非空查询会在配置的工作区深度内做元数据检索，
   不会被前 5000 条索引行限制；同一工作区的多个 query 会共享搜索目录缓存，默认
-  上限为 100,000 行、4 个 workspace。
+  上限为 100,000 行、4 个 workspace。Host 响应携带单调递增的 `revision`；查询
+  发现版本变化时，客户端会丢弃该 session 的旧缓存，下一次候选请求重新获取基础索引。
 - @dir 快照有预算：树深 3 / 200 行；仅 ≤32KB 的文本文件附内容（前 24,000 字符，最多 8 个）；二进制文件跳过。
 - 每回合最多注入 5 个引用，同回合按路径去重；默认总上下文预算为 12,000 个估算 token，可通过 `maxContextTokens` 调整。
 - 不完整索引模式下，Client 对 query 做 50ms 可取消防抖；快速输入被替代的 query 不会发起远程检索。

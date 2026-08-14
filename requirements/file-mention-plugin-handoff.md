@@ -104,7 +104,7 @@ file-mention/
 >   `constructor(ctx, config) { super(ctx, 'fileIndex') }`，`static inject = ['fs']`，并将
 >   `static Config` 指向同名 Schemastery schema；
 >   `import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'`。
-> - 方法 `@Remote('list') list(agent: Agent, request: { query?: string }): Promise<{ files: readonly IndexRow[], complete: boolean, cacheTtlMs: number }>`
+> - 方法 `@Remote('list') list(agent: Agent, request: { query?: string }): Promise<{ files: readonly IndexRow[], complete: boolean, revision: number, cacheTtlMs: number }>`
 >   —— 第一个参数必须是 `agent: Agent`（typert 会把客户端传来的 agentId 解析为活体 Agent，
 >   参考 `DynamicCordisRunnerService` 的 Remote 方法）。
 > - 从 `agent.session.header.cwd` 读工作区绝对路径（`SessionHeader.cwd`，可能为 undefined）。
@@ -190,8 +190,9 @@ file-mention/
 >   完整快照（`complete: true`）由客户端本地过滤；索引达到上限而返回
 >   `complete: false` 时，非空 query 通过 Host 查询，并按 query 做有界 TTL 缓存；
 >   数据源为 `ctx.remote.fileIndex.list(session.sessionId, { query: '' })`
->   （首次取快照，返回 `{ files: [{type,path,name,dir}], complete, cacheTtlMs }`，其中 TTL 由 Host 配置）。
+>   （首次取快照，返回 `{ files: [{type,path,name,dir}], complete, revision, cacheTtlMs }`，其中 TTL 和 revision 由 Host 配置/维护）。
 >   不完整快照的非空 query 由 Client 做 50ms 可取消防抖；被后续 query 替代的请求不发起 RPC。
+>   如果 query 响应的 revision 比基础快照新，Client 返回当前 query 结果但丢弃 session 缓存，下一次候选请求重新取基础快照。
 > - `candidates(session, { query, signal })`：缓存就绪后**纯本地**过滤排序
 >   （与 host 同规则，取前 20），`await` 后检查 `signal.aborted` 返回 `[]`；
 >   生成候选：

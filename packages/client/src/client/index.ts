@@ -53,6 +53,7 @@ interface IndexEntry {
   promise: Promise<readonly IndexRowWire[]>
   rows?: readonly IndexRowWire[]
   complete?: boolean
+  revision?: number
   settledAt?: number
   ttlMs?: number
   queries: Map<string, QueryEntry>
@@ -61,6 +62,7 @@ interface IndexEntry {
 interface QueryEntry {
   promise: Promise<readonly IndexRowWire[]>
   rows?: readonly IndexRowWire[]
+  revision?: number
   settledAt?: number
   ttlMs?: number
 }
@@ -198,6 +200,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       if (current === entry) {
         current.rows = rows
         current.complete = answered.value.complete
+        current.revision = answered.value.revision ?? 0
         current.settledAt = Date.now()
         current.ttlMs = answered.value.cacheTtlMs
         rolls.set(sessionId, {
@@ -257,6 +260,14 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       const resultRows = answered.value.files
       const current = entries.get(sessionId)
       if (current === entry) {
+        queryEntry.revision = answered.value.revision ?? 0
+        if (current.revision !== undefined && current.revision !== queryEntry.revision) {
+          // Return this fresh query result, but discard all session state so
+          // the next candidate request refetches the base snapshot.
+          dropSession(sessionId)
+          notifyLexicon(sessionId)
+          return resultRows
+        }
         queryEntry.rows = resultRows
         queryEntry.settledAt = Date.now()
         queryEntry.ttlMs = answered.value.cacheTtlMs

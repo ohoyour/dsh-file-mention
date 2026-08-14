@@ -52,6 +52,8 @@ export interface IndexResult {
   readonly files: readonly IndexRow[]
   /** Whether the returned rows cover the configured workspace scope. */
   readonly complete: boolean
+  /** Monotonic workspace revision; increments when Host observes a mutation. */
+  readonly revision: number
   /** Cache lifetime to use for the client's settled snapshot. */
   readonly cacheTtlMs: number
 }
@@ -380,14 +382,16 @@ export default class FileIndexService extends TypertRemoteService {
   async list(agent: Agent, request: IndexRequest): Promise<IndexResult> {
     const cwd = agent.session.header.cwd
     if (cwd === undefined) {
-      return { files: [], complete: true, cacheTtlMs: this.config.indexTtlMs }
+      return { files: [], complete: true, revision: 0, cacheTtlMs: this.config.indexTtlMs }
     }
     const snapshot = await this.ensureIndexByCwd(cwd)
     const query = request?.query ?? ''
+    const revision = this.indexGenerations.get(cwd) ?? 0
     if (query.trim() === '') {
       return {
         files: snapshot.rows,
         complete: snapshot.complete,
+        revision,
         cacheTtlMs: this.config.indexTtlMs,
       }
     }
@@ -396,12 +400,14 @@ export default class FileIndexService extends TypertRemoteService {
       return {
         files: rankRows(queried.rows, query, 20),
         complete: queried.complete,
+        revision: this.indexGenerations.get(cwd) ?? revision,
         cacheTtlMs: this.config.indexTtlMs,
       }
     }
     return {
       files: rankRows(snapshot.rows, query, 20),
       complete: snapshot.complete,
+      revision,
       cacheTtlMs: this.config.indexTtlMs,
     }
   }
