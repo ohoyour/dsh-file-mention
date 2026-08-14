@@ -1,120 +1,119 @@
 # @ohoyo/dsh-file-mention
 
-DeepSeek Harness 的 **@file / @dir 提及插件**（功能对齐 Codex CLI 的 `@` 提及），以 pnpm monorepo 维护，走 npm 发布路线。
+让 [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/) 支持使用 `@` 引用工作区中的文件和目录。
 
-输入框输入 `@文件名/目录名片段` 弹出候选列表；确认后插入 Harness 原生的结构化引用 chip，内部保存准确的工作区相对路径，发送时由 codec 序列化为可读的 `@{精确路径}`。因此路径含空格、标点、同名文件和目录折叠冲突都能保持准确引用；Host 在 pre-step 边界解析结构化路径，并注入文件内容（`<file_context>`）或目录树+小文件内容（`<dir_context>`）到模型上下文。手输的旧式 `@路径` 和反引号路径仍保留兼容解析。
+在 Harness 输入框中输入 `@` 加文件名或目录名即可搜索并插入引用。这个插件会把引用保存为准确的工作区相对路径，避免空格、标点、同名文件和目录嵌套造成歧义。
 
-> 结构化引用依赖 Harness 当前的 `ReferenceInsert` / `ReferenceCodec` 接口。`@{...}` 是发送给 Host 的协议文本，不是用户必须手写的语法；复制或粘贴引用时也使用同一格式。旧式纯文本 token 仅作为兼容入口保留。
+## 它解决什么问题？
 
-## 包结构
+DeepSeek Harness 原生支持 `@` 提及，但不能直接引用文件和目录。本插件补齐这条链路：
 
-| 包 | 说明 |
-| --- | --- |
-| `packages/host` (`@ohoyo/dsh-file-mention-host`) | Host 插件：`fileIndex` Typert Remote 服务（工作区文件+目录索引，cwd 默认缓存 15s、单飞、上限 5000 条/深度 14）+ `agent/pre-step` 引用注入 |
-| `packages/client` (`@ohoyo/dsh-client-ui-file-mention`) | Web 客户端插件：`@` 触发源（`name: 'file'`、`order: -1`），按 Host 配置 TTL 的本地索引缓存 + 单飞逐键本地过滤，候选无闪烁；结构化 occurrence chip + 旧式 lexicon 兼容 |
-| `packages/bundle` (`@ohoyo/dsh-file-mention`) | 发布面 bundle：`dsh.bundle.patch` 指向 `cordis.patch.yml`，同时插入 host 行与 client 行 |
+- 输入 `@` 后搜索工作区中的文件和目录。
+- 选择文件或目录后插入 Harness 原生引用 chip。
+- 文件引用会注入 `<file_context>`，目录引用会注入 `<dir_context>`。
+- 目录引用包含受限的目录树和小型文本文件内容，避免一次性塞入过大上下文。
+- 路径含空格、标点或重复文件名时仍能保持精确引用。
+- 保留手写旧式 `@path` 和反引号路径的兼容解析。
 
-## 开发
+## 安装
 
-```sh
-pnpm install --frozen-lockfile  # 从 lockfile 安装 registry 依赖
-pnpm build          # tsdown 构建 lib/（host/client 含类型声明；client.js 为浏览器 factory bundle）
-pnpm typecheck      # tsc --noEmit
-pnpm test           # vitest / node:test（Host + Client 66 用例、bundle 2 用例）
-pnpm smoke          # 构建产物冒烟（built client.js + cordis Context 驱动）
-pnpm pack:local     # 生成可在仓库外 profile 安装的三个 tarball
-```
+### 从 npm 安装（推荐）
 
-### 可选：链接本地 deepseek-harness checkout
+要求：已安装 DeepSeek Harness Web。仓库当前以 `0.1.0-rc.5` 系列作为兼容性验证基线。
 
-默认从 registry 解析依赖。若要针对本地 checkout（如 `0.1.0-rc.5`）调试：
+在目标环境执行：
 
 ```sh
-pnpm link:checkout -- <deepseek-harness checkout 路径>
-pnpm install
-```
-
-该脚本只在本机的 `pnpm-workspace.yaml` 中生成（或覆盖）`overrides` 块，把
-`@deepseek-ai/*` 以 `link:` 固定到 checkout；该文件中的本机 overrides 不应提交。
-执行 `pnpm unlink:checkout` 可删除该块并回落到 registry 版本。默认 registry lockfile 已提交；本机链接后
-lockfile 可能暂时出现本机路径，解除链接并重新安装即可恢复。
-
-## 发布（GitHub + npm）
-
-1. 把仓库推到 GitHub（例如 `github.com/<you>/dsh-file-mention`）。
-2. 在仓库 Settings → Secrets and variables → Actions 添加 `NPM_TOKEN`（npmjs.org 的 automation token）。
-3. 推送版本标签触发发布：`git tag v0.1.0 && git push origin v0.1.0`。
-   - 三个 package 的版本必须与 tag 一致；`.github/workflows/publish.yml` 会 frozen install、类型检查、测试、冒烟和打包校验后，按依赖序发布三包（host → client → bundle；bundle 的 `workspace:^` 自动改写为具体版本），发布到 `https://registry.npmjs.org`（见各包 `publishConfig.registry`）。
-   - 每次 push / PR 会跑 `.github/workflows/ci.yml`（build + typecheck + test + smoke）。
-4. 发布后即可按下方“使用者安装”步骤安装。
-
-> 首次发布前请确认三包版本号、`repository` 字段（可选）与 README 链接。
-
-## 使用者安装（profile bundle）
-
-**前置**：目标机为 DeepSeek Harness（Web 界面）部署，版本 ≥ 0.1.0-rc.5 系。
-
-```sh
-# 由 dsh CLI 初始化/维护 profile manifest，并安装 bundle：
 dsh plugin --profile web add @ohoyo/dsh-file-mention
 ```
 
-重启 `dsh web`（进程重启后组合重新装配），刷新页面即可。
-
-**本地 checkout 调试**：这是源码工作流，不是免构建的 GitHub 安装。先构建并打包；`pnpm pack:local`
-会将 bundle 的 `workspace:^` 依赖改写为可在仓库外解析的具体版本，并生成三个 tarball：
+然后重启 Harness Web：
 
 ```sh
-git clone <仓库> dsh-file-mention
+dsh web
+```
+
+如果 Harness Web 已经在运行，请重启对应进程并刷新浏览器页面。
+
+## 使用
+
+1. 在 Harness 输入框中输入 `@` 加文件名或目录名片段，例如 `@README` 或 `@src`。
+2. 从候选列表中选择文件或目录。
+3. 发送消息。
+4. Host 会在请求进入模型前读取对应引用，并把内容加入上下文。
+
+示例：
+
+```text
+请检查 @packages/client/src/client/index.ts 的缓存逻辑。
+请总结 @packages/host/src/ 目录的结构。
+```
+
+菜单选择的引用会使用结构化格式保存，例如：
+
+```text
+@{packages/client/src/client/index.ts}
+```
+
+`@{...}` 是插件内部使用的精确协议格式，通常不需要手动输入。
+
+## 工作方式
+
+插件由两个部分组成：
+
+| 部分 | 作用 |
+| --- | --- |
+| Client | 注册 `@` 输入源，缓存工作区索引，在浏览器端过滤和排序候选项 |
+| Host | 提供文件索引 Remote 服务，解析引用并向模型上下文注入文件或目录内容 |
+
+完整索引会在 Client 本地缓存，正常输入不会为每个字符发起远程请求。大型工作区会使用 Host 端的查询索引；文件写入或编辑后，Host 会使索引失效，Client 会根据版本号丢弃旧缓存并重新获取。
+
+## 从源码安装
+
+适用于需要修改插件、调试 Harness 集成或暂时没有 npm 发布包的场景：
+
+```sh
+git clone <repository-url> dsh-file-mention
 cd dsh-file-mention
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build
 pnpm pack:local
 ```
 
-在 profile 的 `package.json` 中添加本地依赖，并由 `dsh.profile.bundles` 列出 bundle：
+`pnpm pack:local` 会在 `.local-pack/` 生成 Host、Client 和 Bundle 的 tarball。将这三个 tarball 添加到目标 profile 的 `package.json`，并在 `dsh.profile.bundles` 中启用 Bundle，然后在 profile 目录执行：
 
-```jsonc
-{
-  "dependencies": {
-    "@ohoyo/dsh-file-mention": "file:<仓库>/.local-pack/ohoyo-dsh-file-mention-0.1.0.tgz",
-    "@ohoyo/dsh-file-mention-host": "file:<仓库>/.local-pack/ohoyo-dsh-file-mention-host-0.1.0.tgz",
-    "@ohoyo/dsh-client-ui-file-mention": "file:<仓库>/.local-pack/ohoyo-dsh-client-ui-file-mention-0.1.0.tgz"
-  }
-}
+```sh
+pnpm install
+dsh web
 ```
 
-然后在 profile 目录执行 `pnpm install`，重启 `dsh web`。
-
-源码安装依赖构建产物；如果希望不执行构建，使用 npm 发布包或 `pnpm pack` 生成的 tarball。
-
-## 验证清单（对应 handoff Prompt 4）
-
-1. 重启 DSH 进程后插件仍在（组合行存在、无 loading 错误）。
-2. 输入 `@warning` → 候选平滑出现（文件 `📄` + 目录 `📁/`），逐键输入无闪烁。
-3. Enter 选文件或目录 → 输入框出现带准确路径身份的 chip；发送后对话气泡显示对应引用。
-4. 发送文件引用 → 模型上下文出现 `<file_context>`。
-5. 发送目录引用 → 上下文出现 `<dir_context>`，二进制/超大文件被跳过并在统计中体现。
-6. `@不存在的路径`、普通反引号文本（如 `` `false` ``）不注入、不报错。
-7. `@<动态插件id>`（形如 `abc-123`）不被劫持。
-8. 与既有 `@subagent` 源共存：两个分组都出现在菜单中。
+源码安装依赖构建产物；如果不想执行本地构建，请使用 npm 发布包。
 
 ## 已知限制
 
-- 手输旧式 `@路径` 仍受空白分隔、扁平化碰撞和动态插件 ID 兼容规则影响；菜单选择的结构化引用不受这些限制。
-- 菜单分组标题固定显示 `file`（`slash.menu` 语言包由 ui-input-trigger 独占注册，第三方无法本地化）。
-- 同短名后缀匹配上限 2 条，超过则跳过注入（防误注入）。
-- 索引跳过 `node_modules`/`.git`/`dist` 等目录；上限 5000 条（文件+目录）。
-- 超过索引上限时 Host 会返回 `complete: false`，客户端对未命中的查询回退到
-  Host 端检索；已完成索引仍走本地过滤，避免逐键 RPC 和菜单闪烁。写入/编辑文件后
-  Host 会失效索引缓存。不完整索引的非空查询会在配置的工作区深度内做元数据检索，
-  不会被前 5000 条索引行限制；同一工作区的多个 query 会共享搜索目录缓存，默认
-  上限为 100,000 行、4 个 workspace。Host 响应携带单调递增的 `revision`；查询
-  发现版本变化时，客户端会丢弃该 session 的旧缓存，下一次候选请求重新获取基础索引。
-- @dir 快照有预算：树深 3 / 200 行；仅 ≤32KB 的文本文件附内容（前 24,000 字符，最多 8 个）；二进制文件跳过。
-- 每回合最多注入 5 个引用，同回合按路径去重；默认总上下文预算为 12,000 个估算 token，可通过 `maxContextTokens` 调整。
-- 不完整索引模式下，Client 对 query 做 50ms 可取消防抖；快速输入被替代的 query 不会发起远程检索。
-- 候选菜单默认钳制在 `min(260px,100%)` / `max(537px,100%)`（内置 MenuView 设计）；本插件仅对包含 `file` 分组的菜单注入 CSS，将宽度强制为输入卡片宽度（随插件卸载自动移除）。
+- 目录引用会受到树深、文件数量、文件大小和总字符数预算限制。
+- 工作区索引默认最多收录 5,000 个文件和目录；超出后会使用 Host 查询索引补足非空搜索。
+- 手写旧式 `@path` 仍受空白分隔、后缀碰撞和动态插件 ID 兼容规则影响；从菜单选择的结构化引用不受这些限制。
+- Client 当前通过缓存 TTL 和 Host 返回的版本号保持新鲜度；Harness 尚未向第三方 Client 插件开放 `fs/observed` 的实时事件订阅，因此不会在文件变更瞬间主动推送刷新菜单。
+
+## 开发与验证
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+pnpm typecheck
+pnpm test
+pnpm smoke
+```
+
+## 项目结构
+
+```text
+packages/
+├── host/    Host 插件：索引、引用解析和上下文注入
+├── client/  Web 插件：@ 输入源、候选菜单和结构化引用
+└── bundle/  发布 Bundle：同时安装 Host 和 Client
+```
 
 ## License
 
