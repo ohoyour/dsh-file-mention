@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  buildMentionCounts, flattenPath, mentionName, mentionToken, rankRows, rankScore, uniqueCandidates,
+  buildMentionCounts, displayPath, flattenPath, mentionName, mentionToken, rankRows, rankScore, uniqueCandidates,
 } from '../src/client/rank.ts'
 import type { RankableRow } from '../src/client/rank.ts'
 
@@ -74,5 +74,15 @@ describe('flattenPath / mentionToken', () => {
     // Directory `q` collides → extend.
     expect(mentionToken(deep[4]!, counts)).toBe('@p-q')
     expect(mentionToken(deep[5]!, counts)).toBe('@r-q')
+  })
+})
+
+describe('displayPath', () => {
+  it('keeps the real path with slashes for files and a trailing slash for directories', () => {
+    expect(displayPath({ type: 'file', path: 'src/views/kabuto/statistics/warning-disposal-report/index.vue', name: 'index.vue', dir: 'src/views/kabuto/statistics/warning-disposal-report' }))
+      .toBe('warning-disposal-report/index.vue')
+    expect(displayPath({ type: 'directory', path: 'src/views/kabuto/statistics/warning-disposal-report', name: 'warning-disposal-report', dir: 'src/views/kabuto/statistics' }))
+      .toBe('warning-disposal-report/')
+    expect(displayPath({ type: 'file', path: 'main.ts', name: 'main.ts', dir: '' })).toBe('main.ts')
   })
 })

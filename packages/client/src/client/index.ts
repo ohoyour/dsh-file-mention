@@ -25,7 +25,9 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import { TYPERT_REMOTE } from './remote.ts'
 import type { IndexRowWire } from './remote.ts'
-import { buildMentionCounts, mentionName, mentionToken, rankRows, uniqueCandidates } from './rank.ts'
+import {
+  buildMentionCounts, displayPath, mentionName, mentionToken, rankRows, uniqueCandidates,
+} from './rank.ts'
 
 export const name = 'file-mention'
 
@@ -161,17 +163,29 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     onPick({ session, candidate }) {
       const row = picks.get(session.sessionId)?.get(candidate.name)
       if (row === undefined) return undefined
-      // Plain-text reference in the chip-compatible shape the built-in
-      // decoration scans accept: `@<minimal unique suffix>` (files:
-      // parent/name, directories: name; `/` and `.` flattened to `-`), e.g.
-      // `@warning-disposal-report-index-vue `. The Host resolves the token
-      // by suffix-matching the index.
+      // Occurrence-chip insert: the INPUT chip label is the real display path
+      // (slashes allowed — the chip label is arbitrary text), e.g.
+      // `📄 warning-disposal-report/index.vue` / `📁 warning-disposal-report/`.
+      // The model-facing text is serialized on submit by the codec as the
+      // chip-compatible `@<minimal unique suffix>` token, which the Host
+      // resolves by suffix-matching and the conversation bubble decorates by
+      // shape (the bubble scan only accepts `[\w-]+` — a platform limit).
       const counts = rolls.get(session.sessionId)?.counts ?? new Map<string, number>()
-      return { text: `${mentionToken(row, counts)} ` }
+      const token = mentionToken(row, counts).slice(1)
+      const label = displayPath(row)
+      return {
+        insert: {
+          source: 'file',
+          // `token|label` — the codec splits it back apart at submit/copy time.
+          ref: `${token}|${label}`,
+          label: `${row.type === 'directory' ? '📁' : '📄'} ${label}`,
+          clipboardText: label,
+        },
+      }
     },
     lexicon(session) {
-      // Mention names of the settled cache: the composer chips `@<name>`
-      // tokens only when the name is on this roll.
+      // Mention names of the settled cache: the composer chips hand-typed
+      // `@<name>` tokens only when the name is on this roll.
       return rolls.get(session.sessionId)?.names
     },
     subscribeLexicon(session, listener) {
@@ -183,6 +197,12 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         listeners.delete(listener)
         if (listeners.size === 0) lexiconListeners.delete(key)
       }
+    },
+    // Reference codec for insert outcomes: serialize → the flattened chip
+    // token (model + bubble + host resolution); clipboardText → the real path.
+    codec: {
+      clipboardText: ref => ref.split('|')[1] ?? ref,
+      serialize: (ref, _signal) => Promise.resolve(`@${ref.split('|')[0] ?? ref} `),
     },
   }
 

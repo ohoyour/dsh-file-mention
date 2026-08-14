@@ -76,7 +76,11 @@ const picked = source.onPick({
   span: { start: 0, end: 1, draftRev: 1 },
 })
 console.log('dir pick:', JSON.stringify(picked))
-if (picked.text !== '@warning-disposal-report ') throw new Error('unexpected pick text')
+if (picked.insert.label !== '📁 warning-disposal-report/') throw new Error('unexpected pick label')
+if (picked.insert.clipboardText !== 'warning-disposal-report/') throw new Error('unexpected clipboard text')
+const serialized = await source.codec.serialize(picked.insert.ref, new AbortController().signal)
+console.log('serialized model form:', JSON.stringify(serialized))
+if (serialized !== '@warning-disposal-report ') throw new Error('unexpected serialized form')
 const roll = source.lexicon?.({ sessionId: 's1' })
 console.log('lexicon roll:', JSON.stringify(roll))
 if (roll === undefined || !roll.includes('warning-disposal-report-index-vue')) {

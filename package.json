@@ -7,7 +7,9 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "smoke": "node scripts/smoke-client-bundle.mjs",
+    "link:checkout": "node scripts/link-local-checkout.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

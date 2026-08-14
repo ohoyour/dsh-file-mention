@@ -148,3 +148,17 @@ export function mentionToken(row: RankableRow, counts: ReadonlyMap<string, numbe
 export function mentionName(row: RankableRow, counts: ReadonlyMap<string, number>): string {
   return mentionToken(row, counts).slice(1)
 }
+
+/**
+ * The human display path for a row — the real path, slashes and dots intact:
+ * files `parent-last-segment/name`, directories just their name with a
+ * trailing `/` (Codex convention). This is the occurrence-chip LABEL
+ * (arbitrary text, so special characters are fine); only the model-facing
+ * token is flattened.
+ */
+export function displayPath(row: RankableRow): string {
+  if (row.type === 'directory') return `${row.name}/`
+  const segments = row.dir.split('/').filter(Boolean)
+  const parent = segments[segments.length - 1]
+  return parent === undefined || parent === '' ? row.name : `${parent}/${row.name}`
+}
