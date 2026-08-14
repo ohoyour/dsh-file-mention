@@ -18,8 +18,9 @@ Typert namespace `fileIndex`, method `@Remote('list') list(agent, request)`:
   configured row cap or a listing failure prevented an exhaustive walk. Otherwise
   the shared ranking rules apply (base === query > base.startsWith >
   path.startsWith > path.includes, then path length, top 20). For an incomplete
-  snapshot, a non-empty query performs a scoped metadata walk and caches only its
-  matching rows, so results are not limited to the first 5000 entries.
+  snapshot, the first non-empty query builds a shared cwd metadata catalog;
+  subsequent queries reuse it and only cache their top matches. The catalog is
+  bounded by `searchIndexLimit` rows and `searchCacheEntries` workspaces.
 
 The runtime has no generated typert descriptor, so the gateway's **SRC fallback**
 derives the invocation descriptor from the `typertRemote` binding, the `@Remote`
@@ -57,8 +58,9 @@ legacy `@token`, and `` `short/path` `` references (dynamic plugin ids
 The plugin exports a Schemastery `Config` schema. Defaults preserve the limits
 above, while deployments can override index depth/size/TTL and directory/file
 context budgets from the composition row's `config` object. The `fileIndex/list`
-response carries the configured index TTL to the browser so host and client
-caches use one policy.
+  response carries the configured index TTL to the browser so host and client
+  caches use one policy. Large-workspace query catalogs are independently bounded
+  by `searchIndexLimit` (default 100,000 rows) and `searchCacheEntries` (default 4).
 
 ## Development
 

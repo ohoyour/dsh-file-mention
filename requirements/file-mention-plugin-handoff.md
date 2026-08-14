@@ -114,6 +114,9 @@ file-mention/
 >   .hg,obj,.pytest_cache,.mypy_cache`；上限 5000 条、深度 14；**文件与目录都收录**。
 > - 每条 `{ type: 'file' | 'directory', path: 相对路径(正斜杠), name: 名字, dir: 父目录相对路径 }`。
 > - 索引按 cwd 缓存，默认 TTL 15s（由 `Config.indexTtlMs` 配置），单飞（in-flight 去重）。
+> - 当快照因 `indexLimit` 不完整时，非空 query 共享按 cwd 构建的元数据搜索目录，
+>   目录受 `searchIndexLimit`（默认 100000 行）与 `searchCacheEntries`（默认 4 个 workspace）限制；
+>   超限或遍历失败返回 `complete: false`。
 > - `list` 内按 query 过滤排序：base===query(0) > base.startsWith(1) >
 >   path.startsWith(2) > path.includes(3)；同秩按路径长度升序；取前 20；
 >   query 归一化：小写、`\` → `/`。

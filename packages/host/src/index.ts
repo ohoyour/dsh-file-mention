@@ -28,7 +28,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { FsDirEntry, FsInfo, FsTarget } from '@deepseek-ai/dsh-fs'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import { rankRows, rankScore } from './rank.ts'
+import { rankRows } from './rank.ts'
 import type { RankableRow } from './rank.ts'
 
 /** Stable plugin identity used in injected message sources. */
@@ -73,6 +73,10 @@ export interface Config {
   indexCacheEntries: number
   /** Workspace index cache lifetime, in milliseconds. */
   indexTtlMs: number
+  /** Maximum rows retained by the shared query-search catalog. */
+  searchIndexLimit: number
+  /** Maximum number of cwd query-search catalogs retained in memory. */
+  searchCacheEntries: number
   /** Maximum file size read through readText before streaming/truncation. */
   fileSafeSizeBytes: number
   /** Maximum characters injected for one referenced file. */
@@ -133,6 +137,8 @@ const DEFAULT_INDEX_LIMIT = 5000
 const DEFAULT_INDEX_DEPTH = 14
 const DEFAULT_INDEX_CACHE_ENTRIES = 32
 const DEFAULT_INDEX_TTL_MS = 15_000
+const DEFAULT_SEARCH_INDEX_LIMIT = 100_000
+const DEFAULT_SEARCH_CACHE_ENTRIES = 4
 const MAX_QUERY_CACHE_ENTRIES = 128
 
 /** @file: whole-file read threshold; above (or unknown) stream-truncate. */
@@ -157,6 +163,8 @@ const DEFAULT_CONFIG: Config = {
   indexDepth: DEFAULT_INDEX_DEPTH,
   indexCacheEntries: DEFAULT_INDEX_CACHE_ENTRIES,
   indexTtlMs: DEFAULT_INDEX_TTL_MS,
+  searchIndexLimit: DEFAULT_SEARCH_INDEX_LIMIT,
+  searchCacheEntries: DEFAULT_SEARCH_CACHE_ENTRIES,
   fileSafeSizeBytes: DEFAULT_FILE_SAFE_SIZE_BYTES,
   fileTextLimit: DEFAULT_FILE_TEXT_LIMIT,
   dirTreeDepth: DEFAULT_DIR_TREE_DEPTH,
@@ -179,6 +187,8 @@ export const Config: Schema<Config> = Schema.object({
   indexDepth: natural().default(DEFAULT_INDEX_DEPTH),
   indexCacheEntries: positiveInteger().default(DEFAULT_INDEX_CACHE_ENTRIES),
   indexTtlMs: positiveInteger().default(DEFAULT_INDEX_TTL_MS),
+  searchIndexLimit: positiveInteger().default(DEFAULT_SEARCH_INDEX_LIMIT),
+  searchCacheEntries: positiveInteger().default(DEFAULT_SEARCH_CACHE_ENTRIES),
   fileSafeSizeBytes: natural().default(DEFAULT_FILE_SAFE_SIZE_BYTES),
   fileTextLimit: natural().default(DEFAULT_FILE_TEXT_LIMIT),
   dirTreeDepth: natural().default(DEFAULT_DIR_TREE_DEPTH),
@@ -333,6 +343,8 @@ export default class FileIndexService extends TypertRemoteService {
   private readonly noiseDirs: ReadonlySet<string>
   private readonly indexCache = new Map<string, IndexSnapshot & { at: number }>()
   private readonly indexFlights = new Map<string, Promise<IndexSnapshot>>()
+  private readonly searchCache = new Map<string, IndexSnapshot & { at: number }>()
+  private readonly searchFlights = new Map<string, Promise<IndexSnapshot>>()
   private readonly queryCache = new Map<string, IndexSnapshot & { at: number }>()
   private readonly queryFlights = new Map<string, Promise<IndexSnapshot>>()
   /** Prevent an in-flight pre-mutation walk from repopulating the cache. */
@@ -405,12 +417,16 @@ export default class FileIndexService extends TypertRemoteService {
       ? new Set([
         ...this.indexCache.keys(),
         ...this.indexFlights.keys(),
+        ...this.searchCache.keys(),
+        ...this.searchFlights.keys(),
         ...[...this.queryCache.keys(), ...this.queryFlights.keys()]
           .map(key => key.slice(0, key.indexOf('\0'))),
       ])
       : new Set([cwd])
     if (cwd === undefined) {
       this.indexCache.clear()
+      this.searchCache.clear()
+      this.searchFlights.clear()
       this.queryCache.clear()
       this.queryFlights.clear()
     }
@@ -418,6 +434,7 @@ export default class FileIndexService extends TypertRemoteService {
       this.indexGenerations.set(key, (this.indexGenerations.get(key) ?? 0) + 1)
       if (cwd !== undefined) {
         this.indexCache.delete(key)
+        this.deleteSearchEntries(key)
         this.deleteQueryEntries(key)
       }
       this.indexFlights.delete(key)
@@ -432,6 +449,11 @@ export default class FileIndexService extends TypertRemoteService {
     for (const key of this.queryFlights.keys()) {
       if (key.startsWith(prefix)) this.queryFlights.delete(key)
     }
+  }
+
+  private deleteSearchEntries(cwd: string): void {
+    this.searchCache.delete(cwd)
+    this.searchFlights.delete(cwd)
   }
 
   private async ensureIndexSnapshot(agent: Agent): Promise<IndexSnapshot> {
@@ -485,7 +507,14 @@ export default class FileIndexService extends TypertRemoteService {
     const flight = this.queryFlights.get(key)
     if (flight !== undefined) return flight
     const generation = this.indexGenerations.get(cwd) ?? 0
-    const build = this.searchIndex(cwd, query).then((snapshot) => {
+    const build = this.ensureSearchCatalogByCwd(cwd).then((catalog) => {
+      if ((this.indexGenerations.get(cwd) ?? 0) !== generation) {
+        return this.ensureQueryByCwd(cwd, query)
+      }
+      const snapshot: IndexSnapshot = {
+        rows: rankRows(catalog.rows, query, 20),
+        complete: catalog.complete,
+      }
       if ((this.indexGenerations.get(cwd) ?? 0) === generation) {
         this.queryCache.set(key, { ...snapshot, at: Date.now() })
         while (this.queryCache.size > MAX_QUERY_CACHE_ENTRIES) {
@@ -504,6 +533,40 @@ export default class FileIndexService extends TypertRemoteService {
       if (this.queryFlights.get(key) === build) this.queryFlights.delete(key)
     }, () => {
       if (this.queryFlights.get(key) === build) this.queryFlights.delete(key)
+    })
+    return build
+  }
+
+  /** Build one shared metadata catalog for all incomplete-snapshot queries. */
+  private ensureSearchCatalogByCwd(cwd: string): Promise<IndexSnapshot> {
+    const cached = this.searchCache.get(cwd)
+    if (cached !== undefined && Date.now() - cached.at < this.config.indexTtlMs) {
+      this.searchCache.delete(cwd)
+      this.searchCache.set(cwd, cached)
+      return Promise.resolve(cached)
+    }
+    const flight = this.searchFlights.get(cwd)
+    if (flight !== undefined) return flight
+    const generation = this.indexGenerations.get(cwd) ?? 0
+    const build = this.buildSearchIndex(cwd).then((snapshot) => {
+      if ((this.indexGenerations.get(cwd) ?? 0) === generation) {
+        this.searchCache.set(cwd, { ...snapshot, at: Date.now() })
+        while (this.searchCache.size > this.config.searchCacheEntries) {
+          const oldest = this.searchCache.keys().next().value
+          if (oldest === undefined) break
+          this.searchCache.delete(oldest)
+        }
+      }
+      return snapshot
+    }, (error: unknown) => {
+      this.warn(`failed to build workspace search catalog for "${cwd}"`, error)
+      return { rows: [], complete: false }
+    })
+    this.searchFlights.set(cwd, build)
+    void build.then(() => {
+      if (this.searchFlights.get(cwd) === build) this.searchFlights.delete(cwd)
+    }, () => {
+      if (this.searchFlights.get(cwd) === build) this.searchFlights.delete(cwd)
     })
     return build
   }
@@ -553,8 +616,8 @@ export default class FileIndexService extends TypertRemoteService {
     return { rows, complete }
   }
 
-  /** Full metadata walk for one query; it does not retain non-matching rows. */
-  private async searchIndex(cwd: string, query: string): Promise<IndexSnapshot> {
+  /** Full metadata walk shared by all queries until TTL or mutation invalidation. */
+  private async buildSearchIndex(cwd: string): Promise<IndexSnapshot> {
     const root = await this.ctx.fs.resolve(cwd)
     const rows: IndexRow[] = []
     let complete = true
@@ -562,7 +625,7 @@ export default class FileIndexService extends TypertRemoteService {
       { target: root, rel: '', depth: 0 },
     ]
     let head = 0
-    while (head < queue.length) {
+    while (head < queue.length && rows.length < this.config.searchIndexLimit) {
       const { target, rel, depth } = queue[head++]!
       let entries: FsDirEntry[]
       try {
@@ -573,6 +636,10 @@ export default class FileIndexService extends TypertRemoteService {
         continue
       }
       for (const entry of entries) {
+        if (rows.length >= this.config.searchIndexLimit) {
+          complete = false
+          break
+        }
         if (!this.ctx.fs.contains(root, entry.target)) {
           this.warn(`skipping workspace entry outside root: "${entry.name}"`, 'outside workspace')
           continue
@@ -581,16 +648,18 @@ export default class FileIndexService extends TypertRemoteService {
         if (entry.type === 'directory') {
           if (this.noiseDirs.has(entry.name)) continue
           const row: IndexRow = { type: 'directory', path, name: entry.name, dir: rel }
-          if (rankScore(row, query) !== undefined) rows.push(row)
+          rows.push(row)
           if (depth < this.config.indexDepth) {
             queue.push({ target: entry.target, rel: path, depth: depth + 1 })
           }
         } else if (entry.type === 'file') {
           const row: IndexRow = { type: 'file', path, name: entry.name, dir: rel }
-          if (rankScore(row, query) !== undefined) rows.push(row)
+          rows.push(row)
         }
       }
+      if (!complete) break
     }
+    if (rows.length >= this.config.searchIndexLimit) complete = false
     return { rows, complete }
   }
 

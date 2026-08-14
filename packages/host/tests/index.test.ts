@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
@@ -145,6 +145,8 @@ describe('FileIndexService.list', () => {
     expect(FileIndexService.Config).toBe(Config)
     const defaults = Config()
     expect(defaults.indexTtlMs).toBe(15_000)
+    expect(defaults.searchIndexLimit).toBe(100_000)
+    expect(defaults.searchCacheEntries).toBe(4)
 
     const { service, agent } = setup({ ...defaults, indexLimit: 1, indexTtlMs: 1_234 })
     const result = await service.list(agent, { query: '' })
@@ -176,6 +178,25 @@ describe('FileIndexService.list', () => {
     const result = await service.list(agent, { query: 'space' })
     expect(result.files.map(row => row.path)).toContain('docs/space name.md')
     expect(result.complete).toBe(true)
+  })
+
+  it('shares one search catalog across distinct queries', async () => {
+    const root = new Context()
+    const fs = fakeFs({ ...TREE })
+    const listDir = vi.spyOn(fs, 'listDir')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.provide('fs', fs as any)
+    const service = new FileIndexService(root, { ...Config(), indexLimit: 1 })
+    const agent = makeAgent(CWD)
+
+    await service.list(agent, { query: '' })
+    const afterSnapshot = listDir.mock.calls.length
+    await service.list(agent, { query: 'space' })
+    const afterFirstQuery = listDir.mock.calls.length
+    await service.list(agent, { query: 'warning' })
+
+    expect(afterFirstQuery).toBeGreaterThan(afterSnapshot)
+    expect(listDir.mock.calls.length).toBe(afterFirstQuery)
   })
 
   it('filters and ranks a query (directory base first, then path length)', async () => {

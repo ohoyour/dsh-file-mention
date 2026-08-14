@@ -14,7 +14,8 @@ input-trigger source** (`trigger: '@'`, `name: 'file'`, `order: -1`).
   the Host — the flicker-free fast path. When the Host marks the snapshot
   `complete: false` because the workspace exceeds the index cap, each distinct
   non-empty query is resolved remotely and retained in a bounded per-session
-  TTL cache, avoiding both false negatives and repeated RPCs while typing.
+  TTL cache. The Host shares one bounded metadata catalog across those queries,
+  avoiding repeated workspace walks while typing.
 - Candidates: files `📄` `name` + parent-dir description; directories `📁`
   `name/`; clashing basenames become `dir/名字` (directories keep `/`) so menu
   React keys stay unique.
