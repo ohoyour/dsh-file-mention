@@ -18,6 +18,8 @@ export interface IndexRowWire {
   readonly path: string
   readonly name: string
   readonly dir: string
+  /** Host-provided safe legacy token when the result is exhaustive. */
+  readonly mention?: string
 }
 
 /** Wire result of `fileIndex/list`. */
@@ -41,6 +43,7 @@ const indexRowSchema = z.object({
   path: z.string().readonly(),
   name: z.string().readonly(),
   dir: z.string().readonly(),
+  mention: z.string().optional().readonly(),
 })
 
 const listRequestSchema = z.object({ query: z.string().optional() }).readonly()

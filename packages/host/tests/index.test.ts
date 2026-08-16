@@ -169,9 +169,19 @@ describe('FileIndexService.list', () => {
     expect(paths.some(p => p.startsWith('node_modules'))).toBe(false)
 
     const dirRow = result.files.find(row => row.path === 'warning-disposal-report')
-    expect(dirRow).toMatchObject({ type: 'directory', name: 'warning-disposal-report', dir: '' })
+    expect(dirRow).toMatchObject({
+      type: 'directory',
+      name: 'warning-disposal-report',
+      dir: '',
+      mention: 'warning-disposal-report',
+    })
     const fileRow = result.files.find(row => row.path === 'warning-disposal-report/index.vue')
-    expect(fileRow).toMatchObject({ type: 'file', name: 'index.vue', dir: 'warning-disposal-report' })
+    expect(fileRow).toMatchObject({
+      type: 'file',
+      name: 'index.vue',
+      dir: 'warning-disposal-report',
+      mention: 'warning-disposal-report-index-vue',
+    })
   })
 
   it('searches beyond a capped snapshot for non-empty queries', async () => {
@@ -180,6 +190,7 @@ describe('FileIndexService.list', () => {
     const result = await service.list(agent, { query: 'space' })
     expect(result.files.map(row => row.path)).toContain('docs/space name.md')
     expect(result.complete).toBe(true)
+    expect(result.files.find(row => row.path === 'docs/space name.md')).not.toHaveProperty('mention')
   })
 
   it('shares one search catalog across distinct queries', async () => {

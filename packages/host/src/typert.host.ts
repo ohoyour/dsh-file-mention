@@ -13,6 +13,7 @@ const indexRowSchema = z.object({
   path: z.string().readonly(),
   name: z.string().readonly(),
   dir: z.string().readonly(),
+  mention: z.string().optional().readonly(),
 })
 
 const listRequestSchema = z.object({

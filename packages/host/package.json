@@ -1,6 +1,6 @@
 {
   "name": "@ohoyo/dsh-file-mention-host",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DeepSeek Harness host plugin for @file and @directory mentions: workspace file index Remote service and pre-step reference injection.",
   "type": "module",
   "engines": {
