@@ -19,7 +19,7 @@ describe('Host Typert artifact', () => {
       files: [{ type: 'file', path: 'src/main.ts', name: 'main.ts', dir: 'src' }],
       complete: true,
       revision: 0,
-      cacheTtlMs: 15_000,
+      cacheTtlMs: 60_000,
     }).success).toBe(true)
   })
 })

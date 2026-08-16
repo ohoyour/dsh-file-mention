@@ -144,7 +144,7 @@ describe('FileIndexService.list', () => {
   it('exposes a class Config schema and applies deployment overrides', async () => {
     expect(FileIndexService.Config).toBe(Config)
     const defaults = Config()
-    expect(defaults.indexTtlMs).toBe(15_000)
+    expect(defaults.indexTtlMs).toBe(60_000)
     expect(defaults.searchIndexLimit).toBe(100_000)
     expect(defaults.searchCacheEntries).toBe(4)
 
@@ -231,7 +231,7 @@ describe('FileIndexService.list', () => {
       files: [],
       complete: true,
       revision: 0,
-      cacheTtlMs: 15_000,
+      cacheTtlMs: 60_000,
     })
   })
 
@@ -261,6 +261,58 @@ describe('FileIndexService.list', () => {
     const rebuilt = await service.list(agent, { query: 'a.md' })
     expect(rebuilt.files.map(row => row.path)).toContain('docs/a.md')
     expect(rebuilt.revision).toBe(1)
+  })
+
+  it('invalidates only the workspace of the mutating agent', async () => {
+    const root = new Context()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.provide('fs', fakeFs(TREE) as any)
+    const service = new FileIndexService(root, { ...Config(), indexLimit: 1 })
+    const agentA = makeAgent(CWD)
+    const agentB = makeAgent('/other')
+
+    await service.list(agentA, { query: '' })
+    await service.list(agentB, { query: '' })
+    expect((await service.list(agentA, { query: '' })).revision).toBe(0)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.emit(
+      'fs/observed',
+      { targetKey: '/ws/docs/a.md', displayPath: '/ws/docs/a.md' } as any,
+      { kind: 'present', version: 'v' },
+      { name: 'write', agent: agentB },
+    )
+    // The mutation's workspace rebuilds at revision 1...
+    expect((await service.list(agentB, { query: '' })).revision).toBe(1)
+    // ...while the other workspace's cache survives untouched.
+    expect((await service.list(agentA, { query: '' })).revision).toBe(0)
+  })
+
+  it('invalidates the index when the str_replace_editor tool mutates', async () => {
+    const root = new Context()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.provide('fs', fakeFs(TREE) as any)
+    const service = new FileIndexService(root)
+    const agent = makeAgent(CWD)
+
+    await service.list(agent, { query: '' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    root.emit(
+      'fs/observed',
+      { targetKey: '/ws/docs/a.md', displayPath: '/ws/docs/a.md' } as any,
+      { kind: 'present', version: 'v' },
+      { name: 'str_replace_editor' },
+    )
+    expect((await service.list(agent, { query: '' })).revision).toBe(1)
+  })
+
+  it('attaches a safe mention name to a complete query over a capped base index', async () => {
+    const defaults = Config()
+    const { service, agent } = setup({ ...defaults, indexLimit: 1 })
+    const result = await service.list(agent, { query: 'index.vue' })
+    expect(result.complete).toBe(true)
+    const row = result.files.find(entry => entry.path === 'warning-disposal-report/index.vue')
+    expect(row?.mention).toBe('warning-disposal-report-index-vue')
   })
 
   it('does not inject an absolute path outside the workspace', async () => {

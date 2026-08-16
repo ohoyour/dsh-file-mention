@@ -30,6 +30,7 @@ import { serializeFileReference } from './reference.ts'
 import {
   buildMentionCounts, isMentionName, mentionName, rankRows, uniqueCandidates,
 } from './rank.ts'
+import type { RankedCandidate } from './rank.ts'
 
 export const name = 'file-mention'
 
@@ -57,6 +58,11 @@ interface IndexEntry {
   settledAt?: number
   ttlMs?: number
   queries: Map<string, QueryEntry>
+  /** Rendered-candidate cache per query, valid while `rows` keeps its identity. */
+  rankCache?: Map<string, {
+    rows: readonly IndexRowWire[]
+    result: Array<RankedCandidate<IndexRowWire>>
+  }>
 }
 
 interface QueryEntry {
@@ -210,6 +216,33 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   }
 
   /**
+   * Rank and render candidates, reusing the previous result when the same
+   * query is asked against the same rows array (the base snapshot or a
+   * settled query result). The cache keys on row identity, so a refetched
+   * snapshot or a dropped session invalidates it automatically.
+   */
+  const rankedCandidates = (
+    entry: IndexEntry | undefined,
+    snapshot: CandidateSnapshot,
+    query: string,
+  ): Array<RankedCandidate<IndexRowWire>> => {
+    const compute = (): Array<RankedCandidate<IndexRowWire>> =>
+      uniqueCandidates(rankRows(snapshot.rows, query, 20))
+    if (entry === undefined) return compute()
+    const cache = entry.rankCache ?? (entry.rankCache = new Map())
+    const cached = cache.get(query)
+    if (cached !== undefined && cached.rows === snapshot.rows) return cached.result
+    const result = compute()
+    cache.set(query, { rows: snapshot.rows, result })
+    while (cache.size > MAX_QUERY_CACHE_ENTRIES) {
+      const oldest = cache.keys().next().value
+      if (oldest === undefined) break
+      cache.delete(oldest)
+    }
+    return result
+  }
+
+  /**
    * SessionId-level index cache: Host-configured TTL + single-flight. A failed fetch
    * drops the key so the next keystroke retries instead of caching failure.
    * Settling (success or failure) notifies the lexicon listeners so the
@@ -240,6 +273,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       const current = entries.get(sessionId)
       if (current === entry) {
         current.rows = rows
+        current.rankCache?.clear()
         current.complete = answered.value.complete
         current.revision = answered.value.revision ?? 0
         current.settledAt = Date.now()
@@ -285,9 +319,9 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     if (entry === undefined || entry.complete !== false || queryKey === '') {
       return { rows, complete: entry?.complete === true }
     }
-    if (!await waitForQueryDebounce(signal)) return { rows: [], complete: false }
-    if (signal.aborted) return { rows: [], complete: false }
 
+    // Cached results answer before the debounce: a repeated query must not
+    // wait 50 ms just to hit its own cache entry.
     const existing = entry.queries.get(queryKey)
     if (existing !== undefined) {
       touchQuery(entry, queryKey, existing)
@@ -300,7 +334,10 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
           complete: existing.complete === true,
         }))
       }
+      // Settled but stale: fall through to a refetch (still debounced).
     }
+    if (!await waitForQueryDebounce(signal)) return { rows: [], complete: false }
+    if (signal.aborted) return { rows: [], complete: false }
 
     const queryEntry: QueryEntry = {
       promise: Promise.resolve([] as readonly IndexRowWire[]),
@@ -358,8 +395,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         if (signal.aborted) return []
         // Plain picks use the exact structured text form below, so paths with
         // spaces and other punctuation remain visible without a legacy token.
-        const ranked = rankRows(snapshot.rows, query, 20)
-        const unique = uniqueCandidates(ranked)
+        const unique = rankedCandidates(entries.get(session.sessionId), snapshot, query)
         picks.set(session.sessionId, new Map(unique.map(item => [item.name, {
           row: item.row,
           complete: snapshot.complete,
