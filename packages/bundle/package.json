@@ -1,6 +1,6 @@
 {
   "name": "@ohoyo/dsh-file-mention",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "DeepSeek Harness profile bundle for @file/@directory mentions: the file-mention host plugin and its web client.",
   "type": "module",
   "engines": {

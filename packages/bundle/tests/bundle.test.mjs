@@ -20,3 +20,11 @@ test('package.json declares the bundle patch metadata', () => {
   assert.equal(pkg.exports['./cordis.patch.yml'], './cordis.patch.yml')
   assert.equal(pkg.exports['./package.json'], './package.json')
 })
+
+test('the Host package exposes its Typert registration artifact', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../../host/package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.exports['./typert'].default, './lib/typert.host.js')
+  assert.equal(pkg.exports['./typert'].types, './lib/typert.host.d.ts')
+  assert.ok(pkg.files.includes('lib/typert.host.js'))
+  assert.ok(pkg.files.includes('lib/typert.host.d.ts'))
+})

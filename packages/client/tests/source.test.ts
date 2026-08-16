@@ -148,11 +148,36 @@ describe('file-mention client source', () => {
     ])
     await source.candidates(SESSION, REQ('warning'))
     await source.candidates(SESSION, REQ('index'))
+    expect(source.onPick(PICK('index.vue'))).toEqual({
+      text: '@{warning-disposal-report/index.vue}',
+    })
     expect(list.mock.calls.map(([, request]) => request)).toEqual([
       { query: '' },
       { query: 'warning' },
       { query: 'index' },
     ])
+  })
+
+  it('uses a Host-provided safe token for a complete query over a capped base index', async () => {
+    const java = {
+      type: 'file' as const,
+      path: 'src/main/java/model/DissuadeResult.java',
+      name: 'DissuadeResult.java',
+      dir: 'src/main/java/model',
+      mention: 'DissuadeResult-java',
+    }
+    const list = vi.fn(async (_sessionId: string, request: { query?: string }) => ({
+      ok: true as const,
+      value: request.query === ''
+        ? { files: [FIXTURE[0]!], complete: false, cacheTtlMs: 10_000 }
+        : { files: [java], complete: true, cacheTtlMs: 10_000 },
+    }))
+    const { source } = await setup(list)
+
+    await source.candidates(SESSION, REQ('DissuadeResult'))
+    expect(source.onPick(PICK('DissuadeResult.java'))).toEqual({
+      text: '@DissuadeResult-java',
+    })
   })
 
   it('does not start an incomplete-index query after its signal is superseded', async () => {

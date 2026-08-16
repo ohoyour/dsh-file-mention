@@ -40,6 +40,8 @@ export interface IndexRow extends RankableRow {
   readonly path: string
   readonly name: string
   readonly dir: string
+  /** Safe legacy @ token when the returned index is exhaustive. */
+  readonly mention?: string
 }
 
 /** Request shape of the `fileIndex/list` Remote method. */
@@ -209,6 +211,7 @@ const AT_TOKEN_RE = /(?:^|[\s\u3000])@([^\s@]+)/g
 const BRACED_REFERENCE_RE = /(?:^|[\s\u3000])@\{([^}\n]*)\}/g
 const BACKTICK_TOKEN_RE = /`([^`\n]+)`/g
 const TRAILING_PUNCT_RE = /[.,;:!?，。；：！？、"')\]}>]+$/
+const MENTION_NAME_RE = /^[\w-]+$/
 /** Dynamic Cordis plugin ids like `abc-123` must never be hijacked. */
 const DYNAMIC_PLUGIN_ID_RE = /^[a-z]{3,6}-\d+$/i
 
@@ -301,6 +304,34 @@ function suffixFlattenTokens(path: string): string[] {
     out.push(flattenPath(segments.slice(-k).join('/')))
   }
   return out
+}
+
+/**
+ * Attach a legacy-compatible token only when it is unique across the whole
+ * exhaustive snapshot. The Client cannot derive this safely from a capped
+ * base snapshot or from the top 20 rows of a query result.
+ */
+function withMentionNames(rows: IndexRow[], complete: boolean): IndexRow[] {
+  if (!complete) return rows
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    for (const token of suffixFlattenTokens(row.path)) {
+      counts.set(token, (counts.get(token) ?? 0) + 1)
+    }
+  }
+  return rows.map((row) => {
+    const segments = row.path.split('/')
+    const baseLength = row.type === 'directory' ? 1 : Math.min(2, segments.length)
+    for (let k = baseLength; k <= segments.length; k++) {
+      const candidate = flattenPath(segments.slice(-k).join('/'))
+      if (counts.get(candidate) === 1 && MENTION_NAME_RE.test(candidate)) {
+        return { ...row, mention: candidate }
+      }
+    }
+    // A flattening collision can make even the full path ambiguous. Leave
+    // the field absent so the Client keeps the exact structured reference.
+    return row
+  })
 }
 
 /** Workspace-relative display path for a directly-resolved token. */
@@ -619,7 +650,7 @@ export default class FileIndexService extends TypertRemoteService {
       if (!complete) break
     }
     if (rows.length >= this.config.indexLimit) complete = false
-    return { rows, complete }
+    return { rows: withMentionNames(rows, complete), complete }
   }
 
   /** Full metadata walk shared by all queries until TTL or mutation invalidation. */
@@ -666,7 +697,7 @@ export default class FileIndexService extends TypertRemoteService {
       if (!complete) break
     }
     if (rows.length >= this.config.searchIndexLimit) complete = false
-    return { rows, complete }
+    return { rows: withMentionNames(rows, complete), complete }
   }
 
   // ── B. pre-step injection ──────────────────────────────────────────────────

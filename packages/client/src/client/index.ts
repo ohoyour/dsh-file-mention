@@ -62,9 +62,22 @@ interface IndexEntry {
 interface QueryEntry {
   promise: Promise<readonly IndexRowWire[]>
   rows?: readonly IndexRowWire[]
+  complete?: boolean
   revision?: number
   settledAt?: number
   ttlMs?: number
+}
+
+interface CandidateSnapshot {
+  readonly rows: readonly IndexRowWire[]
+  /** Whether these rows were produced from an exhaustive Host scope. */
+  readonly complete: boolean
+}
+
+interface PickEntry {
+  readonly row: IndexRowWire
+  /** Whether the candidate query, not merely the base cache, was exhaustive. */
+  readonly complete: boolean
 }
 
 /** One session's mention roll: suffix-token frequencies + per-row names. */
@@ -110,7 +123,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
 
   // Plugin-closure state, torn down by the returned disposer.
   const entries = new Map<string, IndexEntry>()
-  const picks = new Map<string, Map<string, IndexRowWire>>()
+  const picks = new Map<string, Map<string, PickEntry>>()
   /** Per-session mention rolls (uniqueness table + lexicon names). */
   const rolls = new Map<string, MentionRoll>()
   /** Per-session lexicon invalidation listeners (subscribeLexicon consumers). */
@@ -230,23 +243,30 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     sessionId: string,
     query: string,
     signal: AbortSignal,
-  ): Promise<readonly IndexRowWire[]> => {
-    if (signal.aborted) return []
+  ): Promise<CandidateSnapshot> => {
+    if (signal.aborted) return { rows: [], complete: false }
     const rows = await ensureIndex(sessionId)
-    if (signal.aborted) return []
+    if (signal.aborted) return { rows: [], complete: false }
     const entry = entries.get(sessionId)
     const queryKey = query.trim()
-    if (entry === undefined || entry.complete !== false || queryKey === '') return rows
-    if (!await waitForQueryDebounce(signal)) return []
-    if (signal.aborted) return []
+    if (entry === undefined || entry.complete !== false || queryKey === '') {
+      return { rows, complete: entry?.complete === true }
+    }
+    if (!await waitForQueryDebounce(signal)) return { rows: [], complete: false }
+    if (signal.aborted) return { rows: [], complete: false }
 
     const existing = entry.queries.get(queryKey)
     if (existing !== undefined) {
       touchQuery(entry, queryKey, existing)
       if (existing.rows !== undefined && Date.now() - (existing.settledAt ?? 0) < (existing.ttlMs ?? 0)) {
-        return existing.rows
+        return { rows: existing.rows, complete: existing.complete === true }
       }
-      if (existing.settledAt === undefined) return existing.promise
+      if (existing.settledAt === undefined) {
+        return existing.promise.then(resultRows => ({
+          rows: resultRows,
+          complete: existing.complete === true,
+        }))
+      }
     }
 
     const queryEntry: QueryEntry = {
@@ -261,6 +281,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       const current = entries.get(sessionId)
       if (current === entry) {
         queryEntry.revision = answered.value.revision ?? 0
+        queryEntry.complete = answered.value.complete
         if (current.revision !== undefined && current.revision !== queryEntry.revision) {
           // Return this fresh query result, but discard all session state so
           // the next candidate request refetches the base snapshot.
@@ -282,7 +303,10 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       if (entry.queries.get(queryKey) === queryEntry) entry.queries.delete(queryKey)
       console.error('[file-mention] index query failed:', error)
     })
-    return queryEntry.promise
+    return queryEntry.promise.then(resultRows => ({
+      rows: resultRows,
+      complete: queryEntry.complete === true,
+    }))
   }
 
   const source: InputTriggerSource = {
@@ -295,14 +319,17 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     },
     async candidates(session, { query, signal }) {
       try {
-        const rows = await ensureCandidates(session.sessionId, query, signal)
+        const snapshot = await ensureCandidates(session.sessionId, query, signal)
         // Superseded keystroke: the shared fetch stays warm, this caller yields.
         if (signal.aborted) return []
         // Plain picks use the exact structured text form below, so paths with
         // spaces and other punctuation remain visible without a legacy token.
-        const ranked = rankRows(rows, query, 20)
+        const ranked = rankRows(snapshot.rows, query, 20)
         const unique = uniqueCandidates(ranked)
-        picks.set(session.sessionId, new Map(unique.map(item => [item.name, item.row])))
+        picks.set(session.sessionId, new Map(unique.map(item => [item.name, {
+          row: item.row,
+          complete: snapshot.complete,
+        }])))
         return unique.map(({ name: itemName, description, icon }) => ({
           name: itemName,
           ...(description === undefined ? {} : { description }),
@@ -314,18 +341,22 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       }
     },
     onPick({ session, candidate }) {
-      const row = picks.get(session.sessionId)?.get(candidate.name)
-      if (row === undefined) return undefined
+      const picked = picks.get(session.sessionId)?.get(candidate.name)
+      if (picked === undefined) return undefined
+      const row = picked.row
       // A complete index gives us the same suffix-count table the Host uses
       // for legacy references. Those plain @tokens receive Harness's native
-      // text-ref highlight while still resolving to this exact row. Keep the
-      // structured form for capped indexes and names that cannot be scanned
-      // by the legacy input decorator (for example paths containing spaces).
+      // text-ref highlight while still resolving to this exact row. For a
+      // complete query over a capped base index, use the Host-provided token:
+      // the Client only sees the top 20 query rows and cannot prove uniqueness
+      // from that partial result itself. Keep the structured form for capped
+      // queries and names that cannot be scanned by the legacy decorator.
       const entry = entries.get(session.sessionId)
       const counts = rolls.get(session.sessionId)?.counts
-      if (entry?.complete === true && counts !== undefined) {
-        const token = mentionName(row, counts)
-        if (isMentionName(token)) return { text: `@${token}` }
+      if (picked.complete) {
+        const token = row.mention
+          ?? (entry?.complete === true && counts !== undefined ? mentionName(row, counts) : undefined)
+        if (token !== undefined && isMentionName(token)) return { text: `@${token}` }
       }
       return { text: serializeFileReference(row.path) }
     },
