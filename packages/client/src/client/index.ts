@@ -167,6 +167,34 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     }
   }
 
+  /**
+   * Add Host-proven safe names discovered by a complete query to the live
+   * decoration roll. A capped base snapshot cannot prove uniqueness locally,
+   * so its locally-derived names must never enter the lexicon. Query rows may
+   * come from the Host's exhaustive search catalog and carry the proof as
+   * `row.mention`.
+   */
+  const appendQueryMentionNames = (
+    sessionId: string,
+    rows: readonly IndexRowWire[],
+    complete: boolean,
+  ): void => {
+    if (!complete) return
+    const entry = entries.get(sessionId)
+    const roll = rolls.get(sessionId)
+    if (entry === undefined || roll === undefined) return
+    const names = new Set(roll.names)
+    let changed = false
+    for (const row of rows) {
+      if (row.mention === undefined || !isMentionName(row.mention) || names.has(row.mention)) continue
+      names.add(row.mention)
+      changed = true
+    }
+    if (!changed) return
+    rolls.set(sessionId, { counts: roll.counts, names: [...names] })
+    notifyLexicon(sessionId)
+  }
+
   const touchQuery = (entry: IndexEntry, query: string, queryEntry: QueryEntry): void => {
     if (entry.queries.get(query) !== queryEntry) return
     entry.queries.delete(query)
@@ -218,7 +246,12 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         current.ttlMs = answered.value.cacheTtlMs
         rolls.set(sessionId, {
           counts,
-          names: mentionableRows.map(row => mentionName(row, counts)),
+          // Names derived from a capped snapshot are not globally safe: a
+          // matching row may be outside the first indexLimit rows. Only the
+          // Host can authorize names for an incomplete snapshot.
+          names: answered.value.complete
+            ? mentionableRows.map(row => mentionName(row, counts))
+            : rows.flatMap(row => row.mention === undefined ? [] : [row.mention]),
         })
         touchSession(sessionId)
         pruneSessions(sessionId)
@@ -289,6 +322,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
           notifyLexicon(sessionId)
           return resultRows
         }
+        appendQueryMentionNames(sessionId, resultRows, queryEntry.complete === true)
         queryEntry.rows = resultRows
         queryEntry.settledAt = Date.now()
         queryEntry.ttlMs = answered.value.cacheTtlMs
