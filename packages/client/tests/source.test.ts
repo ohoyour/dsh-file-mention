@@ -178,6 +178,20 @@ describe('file-mention client source', () => {
     expect(source.onPick(PICK('DissuadeResult.java'))).toEqual({
       text: '@DissuadeResult-java',
     })
+    expect(source.lexicon?.(SESSION)).toContain('DissuadeResult-java')
+  })
+
+  it('does not expose locally-derived names from a capped base index', async () => {
+    const list = vi.fn(async (_sessionId: string, request: { query?: string }) => ({
+      ok: true as const,
+      value: request.query === ''
+        ? { files: [FIXTURE[0]!], complete: false, cacheTtlMs: 10_000 }
+        : { files: [FIXTURE[1]!], complete: false, cacheTtlMs: 10_000 },
+    }))
+    const { source } = await setup(list)
+
+    await source.candidates(SESSION, REQ('warning'))
+    expect(source.lexicon?.(SESSION)).toEqual([])
   })
 
   it('does not start an incomplete-index query after its signal is superseded', async () => {

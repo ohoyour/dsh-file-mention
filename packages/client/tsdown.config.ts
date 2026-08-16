@@ -41,6 +41,7 @@ export default defineConfig([
     dts: false,
     clean: false,
     sourcemap: true,
+    minify: true,
     deps: {
       alwaysBundle: () => true,
       onlyBundle: false,
@@ -50,6 +51,22 @@ export default defineConfig([
       'import.meta.env.MODE': JSON.stringify(process.env.NODE_ENV ?? 'production'),
       'import.meta.env': JSON.stringify({ MODE: process.env.NODE_ENV ?? 'production' }),
     },
+    plugins: [{
+      // Bundle purity gate (mirror of the harness clientBundle preset): every
+      // @deepseek-ai import in the browser bundle must be type-only and erased
+      // before bundling. A value import would inline a duplicate host-side
+      // runtime instance or require a module-table entry this bundle does not
+      // declare — fail the build instead of shipping it.
+      name: 'file-mention-client-bundle-purity',
+      resolveId(source: string) {
+        if (!source.startsWith('@deepseek-ai/')) return null
+        throw new Error(
+          `file-mention client bundle purity: "${source}" is not allowed as a value `
+          + 'import — all @deepseek-ai imports must be type-only (erased at build); '
+          + 'collaborate with harness plugins through cordis services',
+        )
+      },
+    }],
     outputOptions: {
       entryFileNames: 'client.js',
       banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(ID)}, factory: (require) => {`,

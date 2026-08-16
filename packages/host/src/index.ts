@@ -63,6 +63,12 @@ export interface IndexResult {
 interface IndexSnapshot {
   readonly rows: IndexRow[]
   readonly complete: boolean
+  /**
+   * Flattened legacy-token → matching rows, for suffix resolution of old
+   * `@token` mentions. Built only for the base index (≤ indexLimit rows);
+   * the search catalog resolves queries through ranking, not tokens.
+   */
+  readonly suffixIndex?: ReadonlyMap<string, readonly IndexRow[]>
 }
 
 /** Deployment controls for indexing and context injection. */
@@ -140,10 +146,12 @@ const DEFAULT_NOISE_DIRS = [
 const DEFAULT_INDEX_LIMIT = 5000
 const DEFAULT_INDEX_DEPTH = 14
 const DEFAULT_INDEX_CACHE_ENTRIES = 32
-const DEFAULT_INDEX_TTL_MS = 15_000
+const DEFAULT_INDEX_TTL_MS = 60_000
 const DEFAULT_SEARCH_INDEX_LIMIT = 100_000
 const DEFAULT_SEARCH_CACHE_ENTRIES = 4
 const MAX_QUERY_CACHE_ENTRIES = 128
+/** Concurrent directory listings during one workspace index walk. */
+const WALK_CONCURRENCY = 16
 
 /** @file: whole-file read threshold; above (or unknown) stream-truncate. */
 const DEFAULT_FILE_SAFE_SIZE_BYTES = 400 * 1024
@@ -307,6 +315,24 @@ function suffixFlattenTokens(path: string): string[] {
 }
 
 /**
+ * Inverted flattened-suffix lookup for legacy `@token` resolution: every
+ * suffix token of every row maps to the rows that carry it, so a token
+ * resolves to the single row with that suffix in O(1) instead of rescanning
+ * the whole index per reference.
+ */
+function buildSuffixIndex(rows: readonly IndexRow[]): ReadonlyMap<string, readonly IndexRow[]> {
+  const index = new Map<string, IndexRow[]>()
+  for (const row of rows) {
+    for (const token of suffixFlattenTokens(row.path)) {
+      const bucket = index.get(token)
+      if (bucket === undefined) index.set(token, [row])
+      else bucket.push(row)
+    }
+  }
+  return index
+}
+
+/**
  * Attach a legacy-compatible token only when it is unique across the whole
  * exhaustive snapshot. The Client cannot derive this safely from a capped
  * base snapshot or from the top 20 rows of a query result.
@@ -341,14 +367,19 @@ function relFor(cwd: string, token: string): string {
   return rel.replace(/\/+$/, '')
 }
 
-/** `fs/observed` carries an opaque ToolExecution actor; only writes mutate the index. */
+/**
+ * Tool names whose `fs/observed` emissions record a workspace mutation.
+ * The actor is the opaque `ToolExecution` whose `name` is the tool name:
+ * tool-fs `write`/`edit` and the str-replace editor mutate; read-style
+ * tools emit the same event shape with their own names and must not
+ * invalidate the index.
+ */
+const MUTATION_TOOL_NAMES = new Set(['write', 'edit', 'str_replace_editor'])
+
 function isMutationActor(actor: object | undefined): boolean {
   if (actor === undefined) return false
-  const operation = (actor as { readonly name?: unknown }).name
-  return operation === 'write'
-    || operation === 'edit'
-    || operation === 'tool:write'
-    || operation === 'tool:edit'
+  const operation = String((actor as { readonly name?: unknown }).name)
+  return MUTATION_TOOL_NAMES.has(operation)
 }
 
 /** Format the `<file_context>` message text (handoff template). */
@@ -389,6 +420,11 @@ export default class FileIndexService extends TypertRemoteService {
     count: number
     contextTokens: number
   }>()
+  /** Per-cwd lazy mention-count tables, invalidated together with the index. */
+  private readonly mentionCounts = new Map<string, {
+    readonly generation: number
+    readonly counts: Map<string, number>
+  }>()
 
   constructor(ctx: Context, config: Config = DEFAULT_CONFIG) {
     super(ctx, 'fileIndex')
@@ -397,8 +433,29 @@ export default class FileIndexService extends TypertRemoteService {
     ctx.on('agent/pre-step', (payload, next) => this.handlePreStep(payload, next), { prepend: true })
     ctx.on('fs/observed', (_target, _observation, actor) => {
       if (!isMutationActor(actor)) return
-      this.invalidateIndex()
+      this.invalidateForActor(actor)
     })
+  }
+
+  /**
+   * Invalidate only the workspace whose tree the mutation touched; fall back
+   * to a global invalidation when the actor carries no session cwd. The
+   * `fs/observed` actor is the `ToolExecution`, which carries the executing
+   * agent and therefore the session header cwd of the workspace that changed.
+   */
+  private invalidateForActor(actor: object | undefined): void {
+    if (actor === undefined) {
+      this.invalidateIndex()
+      return
+    }
+    const cwd = (actor as {
+      readonly agent?: { readonly session?: { readonly header?: { readonly cwd?: string } } }
+    }).agent?.session?.header?.cwd
+    if (cwd === undefined) {
+      this.invalidateIndex()
+    } else {
+      this.invalidateIndex(cwd)
+    }
   }
 
   // ── A. index Remote service ────────────────────────────────────────────────
@@ -466,6 +523,7 @@ export default class FileIndexService extends TypertRemoteService {
       this.searchFlights.clear()
       this.queryCache.clear()
       this.queryFlights.clear()
+      this.mentionCounts.clear()
     }
     for (const key of keys) {
       this.indexGenerations.set(key, (this.indexGenerations.get(key) ?? 0) + 1)
@@ -473,6 +531,7 @@ export default class FileIndexService extends TypertRemoteService {
         this.indexCache.delete(key)
         this.deleteSearchEntries(key)
         this.deleteQueryEntries(key)
+        this.mentionCounts.delete(key)
       }
       this.indexFlights.delete(key)
     }
@@ -549,7 +608,9 @@ export default class FileIndexService extends TypertRemoteService {
         return this.ensureQueryByCwd(cwd, query)
       }
       const snapshot: IndexSnapshot = {
-        rows: rankRows(catalog.rows, query, 20),
+        rows: catalog.complete
+          ? this.withMentionsForRanked(cwd, rankRows(catalog.rows, query, 20), catalog.rows)
+          : rankRows(catalog.rows, query, 20),
         complete: catalog.complete,
       }
       if ((this.indexGenerations.get(cwd) ?? 0) === generation) {
@@ -608,96 +669,134 @@ export default class FileIndexService extends TypertRemoteService {
     return build
   }
 
-  /** BFS walk of the workspace: files and directories, noise dirs skipped. */
+  /**
+   * Base workspace index: the bounded walk plus eager mention names (needed
+   * by complete snapshots) and the legacy-token suffix lookup.
+   */
   private async buildIndex(cwd: string): Promise<IndexSnapshot> {
-    const root = await this.ctx.fs.resolve(cwd)
-    const rows: IndexRow[] = []
-    let complete = true
-    const queue: Array<{ target: FsTarget; rel: string; depth: number }> = [
-      { target: root, rel: '', depth: 0 },
-    ]
-    let head = 0
-    while (head < queue.length && rows.length < this.config.indexLimit) {
-      const { target, rel, depth } = queue[head++]!
-      let entries: FsDirEntry[]
-      try {
-        entries = await this.ctx.fs.listDir(target)
-      } catch (error) {
-        this.warn(`failed to list directory "${rel || cwd}"`, error)
-        complete = false
-        continue
-      }
-      for (const entry of entries) {
-        if (rows.length >= this.config.indexLimit) {
-          complete = false
-          break
-        }
-        if (!this.ctx.fs.contains(root, entry.target)) {
-          this.warn(`skipping workspace entry outside root: "${entry.name}"`, 'outside workspace')
-          continue
-        }
-        const path = rel === '' ? entry.name : `${rel}/${entry.name}`
-        if (entry.type === 'directory') {
-          if (this.noiseDirs.has(entry.name)) continue
-          rows.push({ type: 'directory', path, name: entry.name, dir: rel })
-          if (depth < this.config.indexDepth) {
-            queue.push({ target: entry.target, rel: path, depth: depth + 1 })
-          }
-        } else if (entry.type === 'file') {
-          rows.push({ type: 'file', path, name: entry.name, dir: rel })
-        }
-      }
-      if (!complete) break
+    const snapshot = await this.walkIndex(cwd, this.config.indexLimit)
+    return {
+      ...snapshot,
+      rows: withMentionNames(snapshot.rows, snapshot.complete),
+      suffixIndex: buildSuffixIndex(snapshot.rows),
     }
-    if (rows.length >= this.config.indexLimit) complete = false
-    return { rows: withMentionNames(rows, complete), complete }
   }
 
-  /** Full metadata walk shared by all queries until TTL or mutation invalidation. */
-  private async buildSearchIndex(cwd: string): Promise<IndexSnapshot> {
+  /**
+   * Full metadata catalog shared by all incomplete-snapshot queries until TTL
+   * or mutation invalidation. Mention names are attached lazily per query
+   * (see `withMentionsForRanked`) so a 100k-row build never computes the
+   * suffix-count table the menu does not use.
+   */
+  private buildSearchIndex(cwd: string): Promise<IndexSnapshot> {
+    return this.walkIndex(cwd, this.config.searchIndexLimit)
+  }
+
+  /**
+   * Walk the workspace BFS in bounded-concurrency batches: files and
+   * directories, noise dirs skipped, depth-bounded, capped at `limit` rows.
+   * Parallel directory listings keep large workspaces from serializing one
+   * readdir round-trip per directory; a batch may overshoot `limit` slightly
+   * before noticing it, which only widens an already-incomplete snapshot.
+   */
+  private async walkIndex(cwd: string, limit: number): Promise<IndexSnapshot> {
     const root = await this.ctx.fs.resolve(cwd)
     const rows: IndexRow[] = []
     let complete = true
-    const queue: Array<{ target: FsTarget; rel: string; depth: number }> = [
+    let frontier: Array<{ target: FsTarget; rel: string; depth: number }> = [
       { target: root, rel: '', depth: 0 },
     ]
-    let head = 0
-    while (head < queue.length && rows.length < this.config.searchIndexLimit) {
-      const { target, rel, depth } = queue[head++]!
-      let entries: FsDirEntry[]
-      try {
-        entries = await this.ctx.fs.listDir(target)
-      } catch (error) {
-        this.warn(`failed to search directory "${rel || cwd}"`, error)
-        complete = false
-        continue
-      }
-      for (const entry of entries) {
-        if (rows.length >= this.config.searchIndexLimit) {
-          complete = false
-          break
-        }
-        if (!this.ctx.fs.contains(root, entry.target)) {
-          this.warn(`skipping workspace entry outside root: "${entry.name}"`, 'outside workspace')
-          continue
-        }
-        const path = rel === '' ? entry.name : `${rel}/${entry.name}`
-        if (entry.type === 'directory') {
-          if (this.noiseDirs.has(entry.name)) continue
-          const row: IndexRow = { type: 'directory', path, name: entry.name, dir: rel }
-          rows.push(row)
-          if (depth < this.config.indexDepth) {
-            queue.push({ target: entry.target, rel: path, depth: depth + 1 })
+    while (frontier.length > 0 && rows.length < limit) {
+      const next: Array<{ target: FsTarget; rel: string; depth: number }> = []
+      for (let offset = 0; offset < frontier.length && rows.length < limit; offset += WALK_CONCURRENCY) {
+        const batch = frontier.slice(offset, offset + WALK_CONCURRENCY)
+        const children = await Promise.all(batch.map(async (item) => {
+          const itemChildren: Array<{ target: FsTarget; rel: string; depth: number }> = []
+          let entries: FsDirEntry[]
+          try {
+            entries = await this.ctx.fs.listDir(item.target)
+          } catch (error) {
+            this.warn(`failed to list directory "${item.rel || cwd}"`, error)
+            complete = false
+            return itemChildren
           }
-        } else if (entry.type === 'file') {
-          const row: IndexRow = { type: 'file', path, name: entry.name, dir: rel }
-          rows.push(row)
+          for (const entry of entries) {
+            if (rows.length >= limit) {
+              complete = false
+              break
+            }
+            if (!this.ctx.fs.contains(root, entry.target)) {
+              this.warn(`skipping workspace entry outside root: "${entry.name}"`, 'outside workspace')
+              continue
+            }
+            const path = item.rel === '' ? entry.name : `${item.rel}/${entry.name}`
+            if (entry.type === 'directory') {
+              if (this.noiseDirs.has(entry.name)) continue
+              rows.push({ type: 'directory', path, name: entry.name, dir: item.rel })
+              if (item.depth < this.config.indexDepth) {
+                itemChildren.push({ target: entry.target, rel: path, depth: item.depth + 1 })
+              }
+            } else if (entry.type === 'file') {
+              rows.push({ type: 'file', path, name: entry.name, dir: item.rel })
+            }
+          }
+          return itemChildren
+        }))
+        for (const itemChildren of children) next.push(...itemChildren)
+      }
+      frontier = next
+    }
+    if (rows.length >= limit) complete = false
+    return { rows, complete }
+  }
+
+  /**
+   * Lazily attach Host-proven mention names to ranked query rows. The
+   * suffix-count table spans the whole exhaustive catalog but is computed
+   * only once per catalog generation, on the first query that needs it —
+   * building it for every row at catalog time would burn CPU the menu never
+   * uses. The name rule mirrors `withMentionNames`: shortest unique flattened
+   * suffix that satisfies the chip scanner.
+   */
+  private withMentionsForRanked(
+    cwd: string,
+    ranked: readonly IndexRow[],
+    all: readonly IndexRow[],
+  ): IndexRow[] {
+    const counts = this.mentionCountsFor(cwd, all)
+    return ranked.map((row) => {
+      const segments = row.path.split('/')
+      const baseLength = row.type === 'directory' ? 1 : Math.min(2, segments.length)
+      for (let k = baseLength; k <= segments.length; k++) {
+        const candidate = flattenPath(segments.slice(-k).join('/'))
+        if ((counts.get(candidate) ?? 0) === 1 && MENTION_NAME_RE.test(candidate)) {
+          return { ...row, mention: candidate }
         }
       }
-      if (!complete) break
+      return row
+    })
+  }
+
+  /** One cached suffix-count table per cwd, rebuilt when its generation bumps. */
+  private mentionCountsFor(cwd: string, all: readonly IndexRow[]): Map<string, number> {
+    const generation = this.indexGenerations.get(cwd) ?? 0
+    const cached = this.mentionCounts.get(cwd)
+    if (cached !== undefined && cached.generation === generation) return cached.counts
+    const counts = new Map<string, number>()
+    for (const row of all) {
+      for (const token of suffixFlattenTokens(row.path)) {
+        counts.set(token, (counts.get(token) ?? 0) + 1)
+      }
     }
-    if (rows.length >= this.config.searchIndexLimit) complete = false
-    return { rows: withMentionNames(rows, complete), complete }
+    this.mentionCounts.set(cwd, { generation, counts })
+    if (this.mentionCounts.size > 64) {
+      for (const key of this.mentionCounts.keys()) {
+        if (key === cwd) continue
+        this.mentionCounts.delete(key)
+        if (this.mentionCounts.size <= 64) break
+      }
+    }
+    return counts
   }
 
   // ── B. pre-step injection ──────────────────────────────────────────────────
@@ -707,6 +806,7 @@ export default class FileIndexService extends TypertRemoteService {
    * unit testing; the constructor wires it with `{ prepend: true }`).
    */
   async handlePreStep(payload: PreStepPayload, next: () => Promise<PreStepDecision>): Promise<PreStepDecision> {
+    this.prewarm(payload.agent)
     const decision = await next()
     if (decision.kind === 'reject' || payload.signal.aborted) return decision
     try {
@@ -719,6 +819,22 @@ export default class FileIndexService extends TypertRemoteService {
       this.warn('pre-step reference injection failed', error)
       return decision
     }
+  }
+
+  /**
+   * Fire-and-forget warm-up of the workspace index — and, for capped
+   * snapshots, the shared query catalog — so legacy-reference resolution in
+   * this turn and the next menu interaction never block on a cold build.
+   * Single-flight plus the generation guard make concurrent warm-ups no-ops;
+   * both builds contain their own failures, so a rejected pre-step or a
+   * broken workspace never surfaces an unhandled rejection here.
+   */
+  private prewarm(agent: Agent): void {
+    const cwd = agent.session.header.cwd
+    if (cwd === undefined) return
+    void this.ensureIndexByCwd(cwd).then((snapshot) => {
+      if (!snapshot.complete) void this.ensureSearchCatalogByCwd(cwd)
+    })
   }
 
   private async collectInjected(
@@ -812,7 +928,8 @@ export default class FileIndexService extends TypertRemoteService {
     if (exact) return []
     if (signal.aborted) return []
     // 2) index suffix matching
-    const rows = (await this.ensureIndexByCwd(cwd)).rows
+    const snapshot = await this.ensureIndexByCwd(cwd)
+    const rows = snapshot.rows
     if (signal.aborted) return []
     const dirRows = rows.filter(row => row.type === 'directory'
       && (row.path === norm || row.path.endsWith(`/${norm}`)))
@@ -833,9 +950,10 @@ export default class FileIndexService extends TypertRemoteService {
     // contain `@<minimal unique suffix>` tokens (`/` and `.` both become `-`),
     // which the built-in reference-chip scans require. A token resolves when
     // exactly one index row carries it as a flattened suffix; collisions
-    // (two rows sharing the token) or zero matches inject nothing.
+    // (two rows sharing the token) or zero matches inject nothing. The
+    // inverted suffix index answers in O(1) instead of rescanning every row.
     if (!dirIntent) {
-      const matched = rows.filter(row => suffixFlattenTokens(row.path).includes(norm))
+      const matched = snapshot.suffixIndex?.get(norm) ?? []
       if (matched.length === 1) {
         return [{ kind: matched[0]!.type, path: matched[0]!.path }]
       }
@@ -904,6 +1022,24 @@ export default class FileIndexService extends TypertRemoteService {
     return bounded(out, limit)
   }
 
+  /** Dir-snapshot candidate read: whole for known small sizes, streamed for unknown. */
+  private async readDirCandidateText(
+    target: FsTarget,
+    size: number | undefined,
+    signal: AbortSignal,
+  ): Promise<BoundedText> {
+    const limit = this.config.dirFileTextLimit
+    if (size !== undefined && size <= this.config.dirFileSizeBytes) {
+      return bounded(await this.ctx.fs.readText(target, signal), limit)
+    }
+    let out = ''
+    for await (const chunk of await this.ctx.fs.streamText(target, signal)) {
+      out += chunk
+      if (out.length >= limit) break
+    }
+    return bounded(out, limit)
+  }
+
   /**
    * Codex-style directory snapshot: a depth-3 dir-first tree plus the text of
    * up to 8 small files inside it, under one 60 000-character budget.
@@ -959,21 +1095,23 @@ export default class FileIndexService extends TypertRemoteService {
       }
     }
 
-    // File contents: ≤32 KB text files, binary-sniffed, ≤8 files.
+    // File contents: ≤32 KB text files, binary-sniffed, ≤8 files. A file
+    // with an unknown size is streamed under the same budget instead of being
+    // read whole — a remote or sandboxed backend may not report sizes.
     const sections: Array<{ rel: string; read: BoundedText }> = []
     for (const candidate of contentCandidates) {
       if (signal.aborted) return undefined
       if (sections.length >= this.config.dirFileCount) break
       if (candidate.size !== undefined && candidate.size > this.config.dirFileSizeBytes) continue
-      let text: string
+      let read: BoundedText
       try {
-        text = await this.ctx.fs.readText(candidate.target, signal)
+        read = await this.readDirCandidateText(candidate.target, candidate.size, signal)
       } catch (error) {
         if (signal.aborted) return undefined
         continue
       }
-      if (text.slice(0, 512).includes('\0')) continue
-      sections.push({ rel: candidate.rel, read: bounded(text, this.config.dirFileTextLimit) })
+      if (read.text.slice(0, 512).includes('\0')) continue
+      sections.push({ rel: candidate.rel, read })
     }
     if (signal.aborted) return undefined
 

@@ -30,6 +30,7 @@ import { serializeFileReference } from './reference.ts'
 import {
   buildMentionCounts, isMentionName, mentionName, rankRows, uniqueCandidates,
 } from './rank.ts'
+import type { RankedCandidate } from './rank.ts'
 
 export const name = 'file-mention'
 
@@ -57,6 +58,11 @@ interface IndexEntry {
   settledAt?: number
   ttlMs?: number
   queries: Map<string, QueryEntry>
+  /** Rendered-candidate cache per query, valid while `rows` keeps its identity. */
+  rankCache?: Map<string, {
+    rows: readonly IndexRowWire[]
+    result: Array<RankedCandidate<IndexRowWire>>
+  }>
 }
 
 interface QueryEntry {
@@ -167,6 +173,34 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     }
   }
 
+  /**
+   * Add Host-proven safe names discovered by a complete query to the live
+   * decoration roll. A capped base snapshot cannot prove uniqueness locally,
+   * so its locally-derived names must never enter the lexicon. Query rows may
+   * come from the Host's exhaustive search catalog and carry the proof as
+   * `row.mention`.
+   */
+  const appendQueryMentionNames = (
+    sessionId: string,
+    rows: readonly IndexRowWire[],
+    complete: boolean,
+  ): void => {
+    if (!complete) return
+    const entry = entries.get(sessionId)
+    const roll = rolls.get(sessionId)
+    if (entry === undefined || roll === undefined) return
+    const names = new Set(roll.names)
+    let changed = false
+    for (const row of rows) {
+      if (row.mention === undefined || !isMentionName(row.mention) || names.has(row.mention)) continue
+      names.add(row.mention)
+      changed = true
+    }
+    if (!changed) return
+    rolls.set(sessionId, { counts: roll.counts, names: [...names] })
+    notifyLexicon(sessionId)
+  }
+
   const touchQuery = (entry: IndexEntry, query: string, queryEntry: QueryEntry): void => {
     if (entry.queries.get(query) !== queryEntry) return
     entry.queries.delete(query)
@@ -179,6 +213,33 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       if (oldest === undefined) break
       entry.queries.delete(oldest)
     }
+  }
+
+  /**
+   * Rank and render candidates, reusing the previous result when the same
+   * query is asked against the same rows array (the base snapshot or a
+   * settled query result). The cache keys on row identity, so a refetched
+   * snapshot or a dropped session invalidates it automatically.
+   */
+  const rankedCandidates = (
+    entry: IndexEntry | undefined,
+    snapshot: CandidateSnapshot,
+    query: string,
+  ): Array<RankedCandidate<IndexRowWire>> => {
+    const compute = (): Array<RankedCandidate<IndexRowWire>> =>
+      uniqueCandidates(rankRows(snapshot.rows, query, 20))
+    if (entry === undefined) return compute()
+    const cache = entry.rankCache ?? (entry.rankCache = new Map())
+    const cached = cache.get(query)
+    if (cached !== undefined && cached.rows === snapshot.rows) return cached.result
+    const result = compute()
+    cache.set(query, { rows: snapshot.rows, result })
+    while (cache.size > MAX_QUERY_CACHE_ENTRIES) {
+      const oldest = cache.keys().next().value
+      if (oldest === undefined) break
+      cache.delete(oldest)
+    }
+    return result
   }
 
   /**
@@ -212,13 +273,19 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       const current = entries.get(sessionId)
       if (current === entry) {
         current.rows = rows
+        current.rankCache?.clear()
         current.complete = answered.value.complete
         current.revision = answered.value.revision ?? 0
         current.settledAt = Date.now()
         current.ttlMs = answered.value.cacheTtlMs
         rolls.set(sessionId, {
           counts,
-          names: mentionableRows.map(row => mentionName(row, counts)),
+          // Names derived from a capped snapshot are not globally safe: a
+          // matching row may be outside the first indexLimit rows. Only the
+          // Host can authorize names for an incomplete snapshot.
+          names: answered.value.complete
+            ? mentionableRows.map(row => mentionName(row, counts))
+            : rows.flatMap(row => row.mention === undefined ? [] : [row.mention]),
         })
         touchSession(sessionId)
         pruneSessions(sessionId)
@@ -252,9 +319,9 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     if (entry === undefined || entry.complete !== false || queryKey === '') {
       return { rows, complete: entry?.complete === true }
     }
-    if (!await waitForQueryDebounce(signal)) return { rows: [], complete: false }
-    if (signal.aborted) return { rows: [], complete: false }
 
+    // Cached results answer before the debounce: a repeated query must not
+    // wait 50 ms just to hit its own cache entry.
     const existing = entry.queries.get(queryKey)
     if (existing !== undefined) {
       touchQuery(entry, queryKey, existing)
@@ -267,7 +334,10 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
           complete: existing.complete === true,
         }))
       }
+      // Settled but stale: fall through to a refetch (still debounced).
     }
+    if (!await waitForQueryDebounce(signal)) return { rows: [], complete: false }
+    if (signal.aborted) return { rows: [], complete: false }
 
     const queryEntry: QueryEntry = {
       promise: Promise.resolve([] as readonly IndexRowWire[]),
@@ -289,6 +359,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
           notifyLexicon(sessionId)
           return resultRows
         }
+        appendQueryMentionNames(sessionId, resultRows, queryEntry.complete === true)
         queryEntry.rows = resultRows
         queryEntry.settledAt = Date.now()
         queryEntry.ttlMs = answered.value.cacheTtlMs
@@ -324,8 +395,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         if (signal.aborted) return []
         // Plain picks use the exact structured text form below, so paths with
         // spaces and other punctuation remain visible without a legacy token.
-        const ranked = rankRows(snapshot.rows, query, 20)
-        const unique = uniqueCandidates(ranked)
+        const unique = rankedCandidates(entries.get(session.sessionId), snapshot, query)
         picks.set(session.sessionId, new Map(unique.map(item => [item.name, {
           row: item.row,
           complete: snapshot.complete,

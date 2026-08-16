@@ -11,9 +11,11 @@ Typert namespace `fileIndex`, method `@Remote('list') list(agent, request)`:
 - BFS-walks the session workspace (`agent.session.header.cwd`), indexing **files and
   directories** with `{ type, path, name, dir }` rows (relative, forward slashes).
 - Skips noise dirs (`node_modules`, `.git`, `dist`, …), capped at 5000 rows / depth 14.
-- Cached per cwd (default TTL 15 s; configurable) with single-flight in-flight dedupe;
-  the cache keeps at most 32 cwd indexes (`indexCacheEntries`). Successful `write`
-  and `edit` filesystem observations invalidate the cached snapshots.
+- Cached per cwd (default TTL 60 s; configurable) with single-flight in-flight dedupe;
+  the cache keeps at most 32 cwd indexes (`indexCacheEntries`). Successful `write`,
+  `edit`, and `str_replace_editor` filesystem observations invalidate only the
+  workspace whose agent performed the mutation (falling back to all workspaces
+  when the observation carries no agent).
 - `query: ''` returns the snapshot plus `complete` and a monotonic `revision`;
   `complete: false` means the
   configured row cap or a listing failure prevented an exhaustive walk. Otherwise
@@ -47,7 +49,8 @@ legacy `@token`, and `` `short/path` `` references (dynamic plugin ids
 - **@file** → `<file_context>` with the full content (≤400 KB via `readText`,
   larger/unknown via `streamText`, capped at 60 000 chars with a truncation note).
 - **@dir** → `<dir_context>` Codex-style snapshot: depth-3 dir-first tree (≤200
-  lines) plus up to 8 text files (≤32 KB, binary-sniffed, 24 000 chars each) under
+  lines) plus up to 8 text files (≤32 KB, binary-sniffed, 24 000 chars each; files
+  with an unknown size are streamed under the same cap instead of read whole) under
   a 60 000-char total budget.
 - At most 5 references per turn, deduped by path; every I/O failure is logged and
   skipped — injection never blocks a turn. The default aggregate context budget
