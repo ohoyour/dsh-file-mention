@@ -56,6 +56,10 @@ dsh web
 ```
 
 `@{...}` 是插件使用的精确协议格式，通常由候选菜单自动插入。
+<img width="1617" height="445" alt="image" src="https://github.com/user-attachments/assets/ec612a97-75f5-432e-b385-6d1b9371d9fa" />
+<img width="1591" height="673" alt="image" src="https://github.com/user-attachments/assets/5133ca19-7ef9-4a2b-b5df-4b56dcb2123c" />
+
+
 
 ## 工作方式
 
